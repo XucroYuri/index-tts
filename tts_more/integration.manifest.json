@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "fc71ae61258b3fb33eb1720829c3cca4b992b257",
+  "source_revision": "9143025946a3c7f6e61c5f7c437483bef7cc5de8",
   "files": {
     "Build-Package.ps1": "e261cbada8b25067639ddfc0c7cc55296aa9b6f447dd4d01d860433085bed593",
     "Initialize.cmd": "d09ed209b42e410d939f7d61984895895eb3c4ee865301de3295f527daad562b",
@@ -46,7 +46,7 @@
     "tts_more/portable_launcher.py": "8d7db09bd4f6a02c02c88be697208eb10c5a7ba5304e0e0fa69d82b8fc9b170d",
     "tts_more/portable_packages.py": "e2aa6e4c33f36c9f0ef8e2ec5975262331e1b1b92b005a1f8f40d5c3406146b4",
     "tts_more/tests/__init__.py": "fefc949246e59922d99bee259403e4845d4ddded5611e8584f0c9eb80997ae53",
-    "tts_more/tests/test_portable_integration.py": "febdb47cef51905101933072167b28875aebf95cc639f2ba8c84a87cad38391e",
+    "tts_more/tests/test_portable_integration.py": "a0bf38ec2307bce568cf5f6f5b8a940c84388e133473300b8f10a8f9d668a59a",
     "tts_more/tts-more-package.schema.json": "3af6f2a49ea5822993b5777c4d0fe8d64c54ad829c7cc9bc208d72c6fd8c93f2",
     "tts_more/tts_more_worker/__init__.py": "29fd8f6be62f176201dcabee9c0279b9f46080ea32e2892c2c4965495370513c",
     "tts_more/tts_more_worker/cosyvoice.py": "c6b6980597e3a252033fce1d040eb601f0514ae3de362f6804a13ff0646f345b",

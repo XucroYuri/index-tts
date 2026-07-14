@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,15 @@ class PortableIntegrationContractTests(unittest.TestCase):
             if path.is_file() and "__pycache__" not in path.parts and path.name != "integration.manifest.json"
         }
         self.assertEqual(controlled, {name for name in expected if name.startswith("tts_more/")})
+        tracked = set(
+            subprocess.run(
+                ["git", "-C", str(ROOT), "ls-files", "--", *sorted(expected)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+        )
+        self.assertEqual(set(expected), tracked, "controlled integration files must be Git tracked")
 
     def test_package_entrypoints_and_native_webui_are_separate(self) -> None:
         for name in ("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Build-Package.ps1", "Start-WebUI.cmd"):

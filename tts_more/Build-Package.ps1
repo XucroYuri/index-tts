@@ -49,6 +49,14 @@ if ($Profile -eq "Bootstrap") {
         if (!$resolved.StartsWith($stage, [StringComparison]::OrdinalIgnoreCase)) { throw "refusing to remove model data outside package stage: $resolved" }
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
+    $embeddedModelFiles = @(Get-ChildItem -LiteralPath $stage -File -Recurse -Force | Where-Object {
+        $_.Name -match "\.(safetensors|ckpt|pth|pt|onnx|bin)$"
+    })
+    foreach ($embeddedModelFile in $embeddedModelFiles) {
+        $resolved = [System.IO.Path]::GetFullPath($embeddedModelFile.FullName)
+        if (!$resolved.StartsWith($stage, [StringComparison]::OrdinalIgnoreCase)) { throw "refusing to remove embedded model data outside package stage: $resolved" }
+        Remove-Item -LiteralPath $resolved -Force
+    }
 }
 @(Get-ChildItem -LiteralPath $stage -Directory -Recurse -Force | Where-Object { $_.Name -in @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache") } | Sort-Object FullName -Descending) | ForEach-Object {
     $resolved = [System.IO.Path]::GetFullPath($_.FullName)

@@ -59,7 +59,7 @@ class PortableIntegrationContractTests(unittest.TestCase):
             self.assertTrue(starts, profile)
             for index, start in enumerate(starts):
                 end = starts[index + 1].start() if index + 1 < len(starts) else len(contents)
-                self.assertIn("--hash=sha256:", contents[start.start() : end], start.group(0))
+                self.assertIn("--hash=sha256:", contents[start.start():end], start.group(0))
 
     def test_full_release_is_fail_closed_in_github_actions(self) -> None:
         builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")

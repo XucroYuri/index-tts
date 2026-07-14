@@ -274,7 +274,7 @@ def _wav_format_and_data(payload: bytes) -> tuple[bytes, bytes]:
     data: bytes | None = None
     offset = 12
     while offset + 8 <= len(payload):
-        chunk_id = payload[offset : offset + 4]
+        chunk_id = payload[offset:offset + 4]
         chunk_size = struct.unpack_from("<I", payload, offset + 4)[0]
         start = offset + 8
         end = start + chunk_size

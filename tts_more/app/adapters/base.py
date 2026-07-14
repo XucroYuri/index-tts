@@ -19,4 +19,3 @@ class SynthesisRequest:
 class SynthesisResult:
     audio_path: Path
     metadata: dict[str, Any] = field(default_factory=dict)
-

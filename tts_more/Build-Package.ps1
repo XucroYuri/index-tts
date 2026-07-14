@@ -78,7 +78,7 @@ $manifest = [ordered]@{
     platform = "windows-x64"; api_contract = "tts-more-v1"
     source = @{ repository = [string]$config.upstream_repository; revision = $revision }
     integration = @{ version = [string]$integrationManifest.integration_version; source_revision = [string]$integrationManifest.source_revision; bundle_sha256 = $integrationSha }
-    runtime = @{ python_version = [string]$config.python; device_profiles = $deviceProfiles; lock = "tts_more/locks/runtime.lock.json"; state_path = "data/local/install-state.json" }
+    runtime = @{ python_version = [string]$config.python; device_profiles = @($deviceProfiles); lock = "tts_more/locks/runtime.lock.json"; state_path = "data/local/install-state.json" }
     models = @{ lock = "tts_more/locks/models.lock.json"; required = $true }
     data_root = "data/local"
     launchers = @{ initialize = "Initialize.cmd"; start = "Start.cmd"; stop = "Stop.cmd"; repair = "Repair.cmd"; build = "Build-Package.ps1" }

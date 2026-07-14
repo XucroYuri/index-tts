@@ -29,6 +29,10 @@ desktop.ini
 /checkpoints/*
 !/checkpoints/*.yaml
 /outputs/
+/artifacts/portable/
+/runtime/
+/data/local/
+/data/cache/portable/
 
 # Example audio files (downloaded on demand, not stored in git)
 /examples/*.wav

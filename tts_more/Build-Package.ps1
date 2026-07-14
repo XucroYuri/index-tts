@@ -31,11 +31,34 @@ if ($null -ne $config.PSObject.Properties['submodules']) {
         if ($actual -ne [string]$submodule.Value) { throw "submodule drift: $($submodule.Name) expected $($submodule.Value), found $actual" }
     }
 }
+
+function Copy-PortableTree {
+    param([string]$Source, [string]$Destination)
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $target = Join-Path $Destination $entry.Name
+        if ($entry.PSIsContainer) {
+            Copy-PortableTree -Source $entry.FullName -Destination $target
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $target -Force
+        }
+    }
+}
+
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage, (Join-Path $stage "package") | Out-Null
 $excluded = @(".git", ".venv", "runtime", "data", "artifacts", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
 $excludedFiles = @(".env", ".env.local")
-Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -notin $excluded -and $_.Name -notin $excludedFiles } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $stage -Recurse -Force }
+foreach ($entry in Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -notin $excluded -and $_.Name -notin $excludedFiles }) {
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+    $destination = Join-Path $stage $entry.Name
+    if ($entry.PSIsContainer) {
+        Copy-PortableTree -Source $entry.FullName -Destination $destination
+    } else {
+        Copy-Item -LiteralPath $entry.FullName -Destination $destination -Force
+    }
+}
 $alwaysLocalModelDirectories = @("SoVITS_weights", "GPT_weights")
 @(Get-ChildItem -LiteralPath $stage -Directory -Recurse -Force | Where-Object { $_.Name -in $alwaysLocalModelDirectories } | Sort-Object FullName -Descending) | ForEach-Object {
     $resolved = [System.IO.Path]::GetFullPath($_.FullName)

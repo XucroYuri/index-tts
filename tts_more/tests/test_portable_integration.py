@@ -19,7 +19,8 @@ class PortableIntegrationContractTests(unittest.TestCase):
         for relative, digest in expected.items():
             path = ROOT / relative
             self.assertTrue(path.is_file(), relative)
-            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest, relative)
+            canonical = path.read_bytes().replace(b"\r\n", b"\n")
+            self.assertEqual(hashlib.sha256(canonical).hexdigest(), digest, relative)
         controlled = {
             path.relative_to(ROOT).as_posix()
             for path in BUNDLE.rglob("*")

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "8b695e74fd1630b6278a8df541cea26c56ba87e7",
+  "source_revision": "01d28168cb64e9ea58a124c129d8013ac5b48f99",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -10,9 +10,9 @@
     "Start-WebUI.cmd": "07e669f197dde89d98ea43d7fa51e31a542d09225a00827429825405751d4d20",
     "Start.cmd": "1b8034201664752783220b50e2bac8c45e423eb99754a2c61dc9e39f2195d9a2",
     "Stop.cmd": "d44fe7a5bf570ccfb476d9bc197fe1874a57bda47b72e1eda566e8c2c3cef340",
-    "tts_more/Build-Package.ps1": "2eee8b95aef690e2678bbf3f135e10bd15a2240a8bcf0e58a0610cc61da12ed0",
+    "tts_more/Build-Package.ps1": "995419f77046369982a84dd1e6157481166ef02e9ee8383195f05cdc353d53e0",
     "tts_more/Initialize.ps1": "c13d18d2d8d278de69545cfa435485473688a7dfea8b46a3668aff52a71a2356",
-    "tts_more/Invoke-PortableStart.ps1": "fd36c946e9785d55c36e38121f5286d9ff019ca98faa9791765d131d70dd3e07",
+    "tts_more/Invoke-PortableStart.ps1": "2c1eabf2ca1e4b1904107764049487e3f07440696b9b2ef53000803bfacd0ad6",
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",
     "tts_more/NOTICE.integration": "7a1f26ce3c6e65220e654c33af172d65ed491f709eb6e9cd6026ea30a4d964bf",
     "tts_more/Portable-Paths.ps1": "7831a05ebdd4cb868ce22bf8ffb2e9fec12ee2abdf7f12cc5fda2996e5259684",
@@ -41,6 +41,8 @@
     "tts_more/bootstrap-conda.ps1": "ce1fab6861cf42a0db3c4bc8f1361f2a4d70cf4acb22138513d0423792dfd841",
     "tts_more/component.json": "b903e58f1ec4b9959c6ff1d40ab4d4d214598643256947d561433a24d0835ed6",
     "tts_more/error-catalog.zh-CN.json": "47d93fb3ce0bfb2fdd58c8d7370ff46ab426c2465245a2de3565ec13a426f5e5",
+    "tts_more/import-portable-data.py": "4c8ba4083cf96903c9b012d51336c7c73c71fac37d75a8aac723760b53e3d2fb",
+    "tts_more/import_portable_data.py": "848d0bc10d9d548be836eeabc0873c67cb0bc5777b00fdb159ad0fcc9763f341",
     "tts_more/locks/component-source.json": "0c6352ed2ea21f56be39c9e6ef717d2e6ec779193423a211152f62fef0262f80",
     "tts_more/locks/models.lock.json": "a3789089e3c3b210d159bb5aafcde550f6f8e2300af0a85c3bead55408497273",
     "tts_more/locks/requirements-cpu.lock.txt": "3b55f0624c1021698a1be1229bfae20b8f3aa6e074609791ee319efe93a6df41",
@@ -52,13 +54,14 @@
     "tts_more/portable_launcher.py": "b1924b3e8f52c6bbb32af5dddb8948a03c1b80713f6bcb93853f239af860c23d",
     "tts_more/portable_operations.py": "4cba1e6b8e6d74363dce497eb8d857942be5ec0277c9a7c649a4da1078339aad",
     "tts_more/portable_packages.py": "9af2fb126e4d6033999420f583a4239ab278c0e1e2a8797f6acbc1d93dc363c8",
+    "tts_more/select-portable-folder.ps1": "fd8253ccefd21deabac7529e05d44be63e394a93f1a96da17dd6e5ce2d075116",
     "tts_more/tests/__init__.py": "fefc949246e59922d99bee259403e4845d4ddded5611e8584f0c9eb80997ae53",
-    "tts_more/tests/test_portable_integration.py": "821b49c6c5be039b4e0a7741d885959f0e1c25a7e270ff6c95bb737b490519f2",
+    "tts_more/tests/test_portable_integration.py": "bfcd3a53e6c5044b154aa58e29f701cff3175582ba3ad946413f4e45e0e1f973",
     "tts_more/tts-more-package.schema.json": "c8d1adf823dc8e1c82ca5a9db52e35fd79107845d27539ccb29ad092e7b7998e",
     "tts_more/tts_more_worker/__init__.py": "29fd8f6be62f176201dcabee9c0279b9f46080ea32e2892c2c4965495370513c",
     "tts_more/tts_more_worker/cosyvoice.py": "c6b6980597e3a252033fce1d040eb601f0514ae3de362f6804a13ff0646f345b",
     "tts_more/tts_more_worker/gpt_sovits.py": "ad30396f0c4f6644e6ab06de15ff780891da9708cbdf18f0f635a86c45b3209f",
     "tts_more/tts_more_worker/indextts.py": "90f0ceb9780e5e2d23318f693cb2a769dc22e81c1e2f89edcba3ff319a1164c4",
-    "\u4f7f\u7528\u8bf4\u660e-\u5148\u770b\u8fd9\u91cc.txt": "ac37bd13420c832ea5e2a70cbe6e94f331eed7ea6383966891dd4859482f1519"
+    "\u4f7f\u7528\u8bf4\u660e-\u5148\u770b\u8fd9\u91cc.txt": "e0e9f85e834df9aac49a62f5855ca9e58a7b5979ab787010cccd3443f63a346b"
   }
 }

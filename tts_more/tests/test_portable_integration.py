@@ -702,6 +702,21 @@ class PortableIntegrationContractTests(unittest.TestCase):
     def test_operation_protocol_is_controlled(self) -> None:
         self.assertTrue((BUNDLE / "portable_operations.py").is_file(), "portable operation protocol")
 
+    def test_previous_version_import_tools_are_controlled(self) -> None:
+        for relative in (
+            "import_portable_data.py",
+            "import-portable-data.py",
+            "select-portable-folder.ps1",
+        ):
+            self.assertTrue((BUNDLE / relative).is_file(), relative)
+        launcher = (BUNDLE / "Invoke-PortableStart.ps1").read_text(encoding="utf-8")
+        selector = (BUNDLE / "select-portable-folder.ps1").read_text(encoding="utf-8")
+        self.assertIn("Invoke-PortableImportOffer", launcher)
+        self.assertIn("Assert-PortableSha256Manifest", launcher)
+        self.assertNotIn("Read-Host", launcher)
+        for display_name in ("TTS More", "GPT-SoVITS", "IndexTTS", "CosyVoice"):
+            self.assertIn(display_name, selector)
+
     def test_model_and_device_locks_are_complete_and_immutable(self) -> None:
         model_lock = json.loads((BUNDLE / "locks" / "models.lock.json").read_text(encoding="utf-8"))
         self.assertTrue(model_lock["complete"], model_lock["missing_required_paths"])

@@ -3,6 +3,7 @@ param(
     [string]$OperationId = "",
     [string]$ManagedBy = "direct",
     [switch]$NoUi,
+    [switch]$OfferImport,
     [ValidateRange(1, 65535)][Nullable[int]]$PortOverride = $null
 )
 
@@ -216,7 +217,24 @@ function Get-PackageContext {
         }
     } catch { Throw-PortableStartError "PACKAGE_CORRUPT" "The runtime lock is invalid JSON" }
 
-    $requiredCoverage = @($initializeScript, $serviceScript, $runtimeLock, $modelLock, $licenses, $manifestPath, $validationScript) | Where-Object { $_ }
+    $importCore = Join-Path $bundle "import_portable_data.py"
+    $importCli = Join-Path $bundle "import-portable-data.py"
+    $importSelector = Join-Path $bundle "select-portable-folder.ps1"
+    $bootstrapScript = Join-Path $bundle "bootstrap-conda.ps1"
+    $packageSchema = if ($component -eq "tts-more") {
+        Join-Path $resolvedRoot "packaging\portable\tts-more-package.schema.json"
+    } else {
+        Join-Path $bundle "tts-more-package.schema.json"
+    }
+    $toolchainLock = if ($component -eq "tts-more") {
+        "packaging/portable/toolchain.lock.json"
+    } else {
+        $relativeToolchain = (Join-Path $bundle "locks\toolchain.lock.json").Substring($resolvedRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        $relativeToolchain
+    }
+    $importDecisionPath = Join-Path $resolvedRoot "data\local\portable-import-decision.json"
+    $importCoverage = @($importCore, $importCli, $importSelector, $packageSchema, $bootstrapScript, $PSCommandPath)
+    $requiredCoverage = @($initializeScript, $serviceScript, $runtimeLock, $modelLock, $licenses, $manifestPath, $validationScript) + $importCoverage | Where-Object { $_ }
 
     return [pscustomobject]@{
         Root = $resolvedRoot
@@ -240,6 +258,14 @@ function Get-PackageContext {
         Port = $port
         HealthPath = $healthPath
         EndpointUrl = "http://127.0.0.1:$port"
+        ImportCore = [IO.Path]::GetFullPath($importCore)
+        ImportCli = [IO.Path]::GetFullPath($importCli)
+        ImportSelector = [IO.Path]::GetFullPath($importSelector)
+        BootstrapScript = [IO.Path]::GetFullPath($bootstrapScript)
+        PackageSchema = [IO.Path]::GetFullPath($packageSchema)
+        ToolchainLock = $toolchainLock
+        ImportDecisionPath = [IO.Path]::GetFullPath($importDecisionPath)
+        ImportCoverage = @($importCoverage | ForEach-Object { [IO.Path]::GetFullPath($_) })
     }
 }
 
@@ -318,6 +344,421 @@ function Write-JsonAtomic {
         if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) }
         throw
     }
+}
+
+function Read-PortableImportDecision {
+    param([Parameter(Mandatory = $true)][object]$Context)
+
+    try {
+        $path = Resolve-PortablePackagePath -Root $Context.Root -RelativePath "data/local/portable-import-decision.json" -Label "portable import decision"
+        if (![string]::Equals([IO.Path]::GetFullPath($path), [IO.Path]::GetFullPath($Context.ImportDecisionPath), [StringComparison]::OrdinalIgnoreCase)) { return $null }
+        if (!(Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $file = Get-Item -LiteralPath $path
+        if ($file.Length -gt 4096) { return $null }
+        $payload = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $names = @($payload.PSObject.Properties.Name | Sort-Object)
+        $expected = @("build_id", "schema_version", "status", "timestamp")
+        if (($names -join "`n") -ne ($expected -join "`n")) { return $null }
+        if ($payload.schema_version -isnot [int] -or [int]$payload.schema_version -ne 1) { return $null }
+        if ([string]$payload.build_id -ne [string]$Context.BuildId) { return $null }
+        if ([string]$payload.status -notin @("completed", "declined", "cancelled")) { return $null }
+        if ([string]::IsNullOrWhiteSpace([string]$payload.timestamp)) { return $null }
+        return $payload
+    } catch { return $null }
+}
+
+function Write-PortableImportDecision {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][ValidateSet("completed", "declined", "cancelled")][string]$Status
+    )
+
+    try {
+        $path = Resolve-PortablePackagePath -Root $Context.Root -RelativePath "data/local/portable-import-decision.json" -Label "portable import decision"
+        if (![string]::Equals([IO.Path]::GetFullPath($path), [IO.Path]::GetFullPath($Context.ImportDecisionPath), [StringComparison]::OrdinalIgnoreCase)) { throw "unexpected marker location" }
+        Write-JsonAtomic -Path $path -Payload ([ordered]@{
+            schema_version = 1
+            build_id = [string]$Context.BuildId
+            status = $Status
+            timestamp = [DateTime]::UtcNow.ToString("o")
+        })
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Unable to record the portable import decision"
+    }
+}
+
+function Confirm-PortableImport {
+    param([Parameter(Mandatory = $true)][string]$Prompt)
+
+    Write-Host $Prompt
+    $systemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+    $choice = Join-Path $systemDirectory "choice.exe"
+    if (!(Test-Path -LiteralPath $choice -PathType Leaf)) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The fixed Windows confirmation tool is unavailable"
+    }
+    $choiceResult = Invoke-PortableCapturedProcess -FilePath $choice -Arguments @("/C", "YN", "/N") -MaximumBytes 65536
+    if ($choiceResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The fixed Windows confirmation tool returned invalid output"
+    }
+    if ($choiceResult.ExitCode -eq 1) { return $true }
+    if ($choiceResult.ExitCode -eq 2) { return $false }
+    Throw-PortableStartError "PACKAGE_CORRUPT" "The confirmation tool did not receive an explicit choice"
+}
+
+function ConvertTo-PortableNativeArgument {
+    param([AllowEmptyString()][Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashes++
+            continue
+        }
+        if ($character -eq [char]34) {
+            [void]$builder.Append(('\' * (($backslashes * 2) + 1)))
+            [void]$builder.Append('"')
+        } else {
+            if ($backslashes -gt 0) { [void]$builder.Append(('\' * $backslashes)) }
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append(('\' * ($backslashes * 2))) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-PortableCapturedProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [AllowEmptyCollection()][Parameter(Mandatory = $true)][string[]]$Arguments,
+        [ValidateRange(1, 4194304)][int]$MaximumBytes = 1048576,
+        [switch]$Utf8
+    )
+
+    $process = $null
+    try {
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $FilePath
+        $startInfo.Arguments = (@($Arguments | ForEach-Object { ConvertTo-PortableNativeArgument -Value $_ }) -join ' ')
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        if ($Utf8) {
+            $startInfo.StandardOutputEncoding = $script:Utf8NoBom
+            $startInfo.StandardErrorEncoding = $script:Utf8NoBom
+            $startInfo.EnvironmentVariables["PYTHONUTF8"] = "1"
+            $startInfo.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+        }
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (!$process.Start()) { throw "start failed" }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = [string]$stdoutTask.Result
+        $stderr = [string]$stderrTask.Result
+        $exceeded = ($script:Utf8NoBom.GetByteCount($stdout) + $script:Utf8NoBom.GetByteCount($stderr)) -gt $MaximumBytes
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            StdOut = $stdout
+            StdErr = $stderr
+            Exceeded = [bool]$exceeded
+        }
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Unable to execute the fixed package tool"
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
+}
+
+function Resolve-PortableImportPython {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [string]$Operation = ""
+    )
+
+    $livePython = Join-Path $Context.Root "runtime\live\python.exe"
+    if (Test-PortableRuntime -Root $Context.Root -PythonPath $livePython -ExpectedVersion $Context.ExpectedPython -ImportProbe $Context.ImportProbe) {
+        $jsonschemaProbe = Invoke-PortableCapturedProcess -FilePath $livePython -Arguments @("-c", "import jsonschema") -MaximumBytes 65536 -Utf8
+        if ($jsonschemaProbe.ExitCode -eq 0 -and !$jsonschemaProbe.Exceeded) { return [IO.Path]::GetFullPath($livePython) }
+    }
+
+    $bootstrapArguments = @(
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", [string]$Context.BootstrapScript,
+        "-CacheRoot", "data/cache/portable/conda",
+        "-LockPath", [string]$Context.ToolchainLock,
+        "-PackageRoot", [string]$Context.Root,
+        "-PassThru"
+    )
+    if (![string]::IsNullOrWhiteSpace($Operation)) {
+        $bootstrapArguments += @("-OperationRoot", $Operation, "-CancelFile", (Join-Path $Operation "cancel.requested"))
+    }
+    $bootstrapPowerShell = Join-Path $PSHOME "powershell.exe"
+    $bootstrapResult = Invoke-PortableCapturedProcess -FilePath $bootstrapPowerShell -Arguments $bootstrapArguments
+    if ($bootstrapResult.ExitCode -ne 0 -or $bootstrapResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The locked package bootstrap for import failed"
+    }
+    $bootstrapOutput = @($bootstrapResult.StdOut -split '\r?\n')
+    $cacheRoot = [IO.Path]::GetFullPath((Join-Path $Context.Root "data\cache\portable\conda"))
+    $condaCandidates = @($bootstrapOutput | ForEach-Object { [string]$_ } | Where-Object {
+        ![string]::IsNullOrWhiteSpace($_) -and [IO.Path]::IsPathRooted($_) -and
+        (Test-Path -LiteralPath $_ -PathType Leaf) -and ((Split-Path -Leaf $_) -ieq "conda.bat") -and
+        (Test-PathWithinRoot -Root $cacheRoot -Path ([IO.Path]::GetFullPath($_)))
+    } | ForEach-Object { [IO.Path]::GetFullPath($_) } | Select-Object -Unique)
+    if ($condaCandidates.Count -ne 1) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The locked package bootstrap did not produce one valid runtime"
+    }
+    $condaRoot = Split-Path -Parent (Split-Path -Parent $condaCandidates[0])
+    $python = Join-Path $condaRoot "python.exe"
+    $relativePython = $python.Substring(([IO.Path]::GetFullPath($Context.Root)).TrimEnd('\', '/').Length).TrimStart('\', '/').Replace('\', '/')
+    try {
+        $resolvedPython = Resolve-PortablePackagePath -Root $Context.Root -RelativePath $relativePython -Label "import runtime" -MustExist
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The locked package bootstrap runtime is outside its fixed cache"
+    }
+    if (!(Test-PathWithinRoot -Root $cacheRoot -Path $resolvedPython)) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The locked package bootstrap runtime is outside its fixed cache"
+    }
+    $versionResult = Invoke-PortableCapturedProcess -FilePath $resolvedPython -Arguments @("-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')") -MaximumBytes 65536 -Utf8
+    if ($versionResult.ExitCode -ne 0 -or $versionResult.Exceeded -or $versionResult.StdOut.Trim() -ne [string]$Context.ExpectedPython) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The locked package bootstrap runtime version is invalid"
+    }
+    $jsonschemaResult = Invoke-PortableCapturedProcess -FilePath $resolvedPython -Arguments @("-c", "import jsonschema") -MaximumBytes 65536 -Utf8
+    if ($jsonschemaResult.ExitCode -ne 0 -or $jsonschemaResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The package import validator is unavailable"
+    }
+    return [IO.Path]::GetFullPath($resolvedPython)
+}
+
+function ConvertFrom-PortableBoundedJson {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Output,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [ValidateRange(1, 1048576)][int]$MaximumBytes = 1048576
+    )
+
+    $text = $Output -join "`n"
+    if ($script:Utf8NoBom.GetByteCount($text) -gt $MaximumBytes) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "$Label exceeded its fixed output limit"
+    }
+    try {
+        $payload = $text | ConvertFrom-Json
+        if ($null -eq $payload -or $payload -is [string] -or $payload.GetType().IsArray) { throw "not an object" }
+        return $payload
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "$Label did not return one valid JSON object"
+    }
+}
+
+function Select-PortableImportFolder {
+    param([Parameter(Mandatory = $true)][object]$Context)
+
+    $powerShell = Join-Path $PSHOME "powershell.exe"
+    $selectorResult = Invoke-PortableCapturedProcess -FilePath $powerShell -Arguments @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", [string]$Context.ImportSelector) -MaximumBytes 65536 -Utf8
+    if ($selectorResult.ExitCode -ne 0 -or $selectorResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The fixed previous-version folder selector failed"
+    }
+    $payload = ConvertFrom-PortableBoundedJson -Output @($selectorResult.StdOut) -Label "The fixed previous-version folder selector" -MaximumBytes 65536
+    if ($payload.PSObject.Properties["cancelled"] -and $payload.cancelled -eq $true) { return "" }
+    if (!$payload.PSObject.Properties["selected_path"] -or [string]::IsNullOrWhiteSpace([string]$payload.selected_path)) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The fixed previous-version folder selector returned an invalid selection"
+    }
+    $selected = [IO.Path]::GetFullPath([string]$payload.selected_path)
+    if (!(Test-Path -LiteralPath $selected -PathType Container)) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The selected previous-version package is unavailable"
+    }
+    return $selected
+}
+
+function ConvertTo-PortableNonNegativeInteger {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (
+        $Value -isnot [byte] -and $Value -isnot [int16] -and $Value -isnot [int32] -and
+        $Value -isnot [int64] -and $Value -isnot [uint16] -and $Value -isnot [uint32] -and
+        $Value -isnot [uint64]
+    ) { Throw-PortableStartError "PACKAGE_CORRUPT" "$Label must be a non-negative integer" }
+    $number = [decimal]$Value
+    if ($number -lt 0 -or $number -gt [int64]::MaxValue) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "$Label must be a non-negative integer"
+    }
+    return [int64]$number
+}
+
+function Assert-PortableImportAssetName {
+    param([Parameter(Mandatory = $true)][object]$Value)
+
+    if ($Value -isnot [string]) { Throw-PortableStartError "PACKAGE_CORRUPT" "An import asset name is invalid" }
+    $name = [string]$Value
+    if (
+        [string]::IsNullOrWhiteSpace($name) -or [IO.Path]::IsPathRooted($name) -or
+        $name.Contains("\") -or $name.Contains(":") -or $name -match '[\x00-\x1f\x7f]' -or
+        $name.StartsWith("/") -or $name.EndsWith("/")
+    ) { Throw-PortableStartError "PACKAGE_CORRUPT" "An import asset name is invalid" }
+    foreach ($segment in @($name -split '/')) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or $segment -in @(".", "..")) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "An import asset name is invalid"
+        }
+    }
+    return $name
+}
+
+function Assert-PortableImportServiceStopped {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port
+    )
+
+    try {
+        $recordPath = Resolve-PortablePackagePath -Root $Context.Root -RelativePath "data/local/run/worker.pid.json" -Label "portable process record"
+        if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
+            $record = Get-Item -LiteralPath $recordPath
+            if ($record.Length -gt 65536) { throw "oversized process record" }
+            $payload = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+            $pidValue = 0
+            if (!$payload.PSObject.Properties["pid"] -or ![int]::TryParse([string]$payload.pid, [ref]$pidValue) -or $pidValue -le 0) {
+                throw "invalid process record"
+            }
+            if ($null -ne (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
+                Throw-PortableStartError "PACKAGE_CORRUPT" "Stop the running worker/service before importing previous-version data"
+            }
+        }
+    } catch [PortableStartException] {
+        throw
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Unable to prove that the package worker/service is stopped"
+    }
+    try {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop)
+        if ($listeners.Count -gt 0) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Stop the running worker/service before importing previous-version data"
+        }
+    } catch [PortableStartException] {
+        throw
+    } catch {
+        if ($_.FullyQualifiedErrorId -eq "CmdletizationQuery_NotFound,Get-NetTCPConnection") { return }
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Unable to prove that the target service port is stopped"
+    }
+}
+
+function Assert-PortableImportNotCancelled {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [string]$Operation = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Operation)) { return }
+    try {
+        $cancelFile = Join-Path $Operation "cancel.requested"
+        [void](Assert-PortableExactOperationContract -OperationsRoot $Context.OperationsRoot -OperationRoot $Operation -CancelFile $cancelFile -RequireOperation)
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "The import cancellation contract is invalid"
+    }
+    if (Test-Path -LiteralPath $cancelFile -PathType Leaf) {
+        Throw-PortableStartError "CANCELLED" "Previous-version import was cancelled"
+    }
+}
+
+function Invoke-PortableImportOffer {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [string]$Operation = "",
+        [Parameter(Mandatory = $true)][string]$ManagedBy,
+        [switch]$NoUi,
+        [switch]$OfferImport,
+        [ValidateRange(0, 65535)][int]$Port = 0
+    )
+
+    $result = [ordered]@{ Status = "skipped"; MarkAfterReady = $false }
+    if (!$Context.IsStaged -or $ManagedBy -ne "direct" -or $NoUi) { return [pscustomobject]$result }
+    if (!$OfferImport -and $null -ne (Read-PortableImportDecision -Context $Context)) { return [pscustomobject]$result }
+    $effectivePort = if ($Port -gt 0) { $Port } else { [int]$Context.Port }
+
+    if (!(Confirm-PortableImport -Prompt "是否从旧版便携包导入用户数据和可复用模型？[Y/N]")) {
+        return [pscustomobject]@{ Status = "declined"; MarkAfterReady = $true }
+    }
+
+    try {
+        Assert-PortableSha256Manifest -Root $Context.Root -ManifestPath $Context.Sha256Manifest -RequiredCoverage $Context.ImportCoverage
+    } catch {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "SHA256SUMS verification failed for the fixed import toolchain"
+    }
+    Assert-PortableImportServiceStopped -Context $Context -Port $effectivePort
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+
+    $selected = Select-PortableImportFolder -Context $Context
+    if ([string]::IsNullOrWhiteSpace($selected)) {
+        return [pscustomobject]@{ Status = "cancelled"; MarkAfterReady = $true }
+    }
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+
+    $python = Resolve-PortableImportPython -Context $Context -Operation $Operation
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+    Assert-PortableImportServiceStopped -Context $Context -Port $effectivePort
+    $planResult = Invoke-PortableCapturedProcess -FilePath $python -Arguments @([string]$Context.ImportCli, "plan", "--old-root", $selected, "--new-root", [string]$Context.Root) -Utf8
+    if ($planResult.ExitCode -ne 0 -or $planResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning failed"
+    }
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+    Assert-PortableImportServiceStopped -Context $Context -Port $effectivePort
+    $plan = ConvertFrom-PortableBoundedJson -Output @($planResult.StdOut) -Label "Previous-version import planning"
+    if (!$plan.PSObject.Properties["plan_digest"] -or [string]$plan.plan_digest -notmatch '^[0-9a-fA-F]{64}$') {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning returned an invalid digest"
+    }
+    if (!$plan.PSObject.Properties["old_package_preserved"] -or $plan.old_package_preserved -ne $true) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning did not preserve the old package"
+    }
+    foreach ($propertyName in @("user_file_count", "user_bytes", "reusable_asset_bytes")) {
+        if (!$plan.PSObject.Properties[$propertyName]) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning omitted a safe summary field"
+        }
+    }
+    $userFiles = ConvertTo-PortableNonNegativeInteger -Value $plan.user_file_count -Label "Imported user file count"
+    $userBytes = ConvertTo-PortableNonNegativeInteger -Value $plan.user_bytes -Label "Imported user byte count"
+    $assetBytes = ConvertTo-PortableNonNegativeInteger -Value $plan.reusable_asset_bytes -Label "Reusable asset byte count"
+    foreach ($listName in @("reusable_assets", "skipped_assets", "already_present")) {
+        if (!$plan.PSObject.Properties[$listName] -or !($plan.$listName -is [System.Array])) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning returned an invalid asset list"
+        }
+        if (@($plan.$listName).Count -gt 100000) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import planning returned too many assets"
+        }
+    }
+    $assets = @($plan.reusable_assets)
+    $safeAssets = @($assets | ForEach-Object { Assert-PortableImportAssetName -Value $_ })
+    $skippedAssetCount = @($plan.skipped_assets).Count
+    $alreadyPresentCount = @($plan.already_present).Count
+
+    Write-Host ("导入计划：用户文件 {0} 个，共 {1} 字节；可复用模型 {2} 个，共 {3} 字节；跳过 {4} 个；已存在 {5} 个。" -f $userFiles, $userBytes, $safeAssets.Count, $assetBytes, $skippedAssetCount, $alreadyPresentCount)
+    foreach ($asset in @($safeAssets | Select-Object -First 20)) { Write-Host ("  - {0}" -f $asset) }
+    if ($safeAssets.Count -gt 20) { Write-Host ("  （另有 {0} 项未展开）" -f ($safeAssets.Count - 20)) }
+    Write-Host "旧版便携包会原样保留；导入会复制到当前包。"
+    Write-Host "导入期间 worker/服务必须保持停止；启动器会在导入完成后再启动服务。"
+    if (!(Confirm-PortableImport -Prompt "确认立即执行上述导入？[Y/N]")) {
+        return [pscustomobject]@{ Status = "declined"; MarkAfterReady = $true }
+    }
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+    Assert-PortableImportServiceStopped -Context $Context -Port $effectivePort
+
+    $digest = [string]$plan.plan_digest
+    $applyResult = Invoke-PortableCapturedProcess -FilePath $python -Arguments @([string]$Context.ImportCli, "apply", "--old-root", $selected, "--new-root", [string]$Context.Root, "--confirmed-digest", $digest) -Utf8
+    if ($applyResult.ExitCode -ne 0 -or $applyResult.Exceeded) {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Previous-version import failed"
+    }
+    [void](ConvertFrom-PortableBoundedJson -Output @($applyResult.StdOut) -Label "Previous-version import")
+    Write-PortableImportDecision -Context $Context -Status "completed"
+    Assert-PortableImportNotCancelled -Context $Context -Operation $Operation
+    Write-Host "旧版便携包数据导入完成；原包未被修改。"
+    return [pscustomobject]@{ Status = "completed"; MarkAfterReady = $false }
 }
 
 function Initialize-Operation {
@@ -620,10 +1061,11 @@ try {
     if (!$NoUi) { Start-ProgressWindow -Operation $operation -Url $url }
 
     $installed = Test-InstallState -Root $root -Full:($script:Context.Profile -eq "full")
+    if (!$installed -and $script:Context.Profile -eq "full") {
+        Throw-PortableStartError "PACKAGE_CORRUPT" "Full package assets are missing or invalid; Start will not download replacements"
+    }
+    $importOutcome = Invoke-PortableImportOffer -Context $script:Context -Operation $operation -ManagedBy $ManagedBy -NoUi:$NoUi -OfferImport:$OfferImport -Port $urlPort
     if (!$installed) {
-        if ($script:Context.Profile -eq "full") {
-            Throw-PortableStartError "PACKAGE_CORRUPT" "Full package assets are missing or invalid; Start will not download replacements"
-        }
         Add-OperationEvent -Operation $operation -Phase "installing" -Message "正在初始化包内私有运行时" -Percent 5
         Invoke-Initialize -Root $root -Operation $operation
         if (!(Test-InstallState -Root $root)) { Throw-PortableStartError "PACKAGE_CORRUPT" "Initialization did not produce a valid package-private runtime state" }
@@ -633,6 +1075,13 @@ try {
     Invoke-ServiceStart -Root $root -Operation $operation -PortOverride $PortOverride
     Add-OperationEvent -Operation $operation -Phase "ready" -Message "服务已就绪：$url" -Percent 100
     Complete-Operation -Operation $operation -Status "ready" -ExitCode 0
+    if ($importOutcome.MarkAfterReady) {
+        try {
+            Write-PortableImportDecision -Context $script:Context -Status $importOutcome.Status
+        } catch {
+            Write-Warning "Unable to record the deferred import decision; the ready service remains available"
+        }
+    }
     Write-Host "$($script:Context.Component) ready: $url"
     if (!$NoUi) {
         if ($script:Context.Component -eq "tts-more") {

@@ -74,7 +74,7 @@ if ($Profile -eq "Bootstrap") {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
     $embeddedModelFiles = @(Get-ChildItem -LiteralPath $stage -File -Recurse -Force | Where-Object {
-        $_.Name -match "\.(safetensors|ckpt|pth|pt|onnx|bin)$"
+        $_.Name -match "\.(safetensors|ckpt|pth|pt|t7|onnx|bin)$"
     })
     foreach ($embeddedModelFile in $embeddedModelFiles) {
         $resolved = [System.IO.Path]::GetFullPath($embeddedModelFile.FullName)
@@ -121,7 +121,7 @@ if ($Profile -eq "Full") {
 }
 if ($Profile -eq "Bootstrap") {
     $forbidden = @(Get-ChildItem -LiteralPath $stage -Recurse -Force | Where-Object {
-        $_.FullName -match "[\\/](\.venv|runtime[\\/]live|data[\\/](cache|local|models))([\\/]|$)" -or $_.Name -match "\.(safetensors|ckpt|pth|pt|onnx|bin)$"
+        $_.FullName -match "[\\/](\.venv|runtime[\\/]live|data[\\/](cache|local|models))([\\/]|$)" -or $_.Name -match "\.(safetensors|ckpt|pth|pt|t7|onnx|bin)$"
     })
     if ($forbidden.Count -gt 0) { throw "bootstrap audit found forbidden runtime/model asset: $($forbidden.FullName -join ', ')" }
 }

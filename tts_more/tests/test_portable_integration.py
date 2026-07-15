@@ -723,6 +723,10 @@ class PortableIntegrationContractTests(unittest.TestCase):
         self.assertIn('$env:GITHUB_ACTIONS -eq "true"', builder)
         self.assertIn("audit-release --zip", builder)
 
+    def test_bootstrap_builder_removes_and_rejects_t7_model_weights(self) -> None:
+        builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
+        self.assertEqual(2, len(re.findall(r"safetensors\|ckpt\|pth\|pt\|t7\|onnx\|bin", builder)))
+
 
 if __name__ == "__main__":
     unittest.main()

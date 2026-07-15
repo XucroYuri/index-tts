@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class EngineName(str, Enum):
@@ -39,6 +39,87 @@ SetupState = Literal[
     "partial",
     "ready",
 ]
+
+
+PortableComponent = Literal["gpt-sovits", "indextts", "cosyvoice"]
+
+
+class PortableServiceLocator(BaseModel):
+    """Machine-local identity and relocation hints for one portable worker."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    component: PortableComponent
+    package_id: str
+    relative_to_tts_more: str | None = None
+    absolute_path_last_seen: str | None = None
+    build_id_last_seen: str | None = None
+    port_override: int | None = Field(default=None, ge=1, le=65535)
+
+    @field_validator("package_id")
+    @classmethod
+    def validate_package_id(cls, value: str) -> str:
+        import unicodedata
+
+        if not value or value != value.strip() or any(character.isspace() for character in value):
+            raise ValueError("package_id must be a non-empty unambiguous identity")
+        if any(unicodedata.category(character).startswith("C") for character in value):
+            raise ValueError("package_id must not contain control characters")
+        if unicodedata.normalize("NFKC", value) != value:
+            raise ValueError("package_id must use canonical characters")
+        if value != value.casefold():
+            raise ValueError("package_id must use canonical lowercase characters")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value):
+            raise ValueError("package_id contains unsupported characters")
+        return value
+
+    @field_validator("build_id_last_seen")
+    @classmethod
+    def validate_optional_identity(cls, value: str | None) -> str | None:
+        import unicodedata
+
+        if value is None:
+            return None
+        if not value or value != value.strip() or any(character.isspace() for character in value):
+            raise ValueError("build_id_last_seen must be an unambiguous identity")
+        if any(unicodedata.category(character).startswith("C") for character in value):
+            raise ValueError("build_id_last_seen must not contain control characters")
+        return value
+
+    @field_validator("absolute_path_last_seen")
+    @classmethod
+    def validate_absolute_path(cls, value: str | None) -> str | None:
+        from pathlib import Path, PureWindowsPath
+        import unicodedata
+
+        if value is None:
+            return None
+        if not value or value != value.strip() or any(
+            unicodedata.category(character).startswith("C") for character in value
+        ):
+            raise ValueError("absolute_path_last_seen must be an unambiguous path")
+        if not Path(value).is_absolute() and not PureWindowsPath(value).is_absolute():
+            raise ValueError("absolute_path_last_seen must be absolute")
+        return value
+
+    @field_validator("relative_to_tts_more")
+    @classmethod
+    def validate_relative_sibling(cls, value: str | None) -> str | None:
+        import unicodedata
+
+        if value is None:
+            return None
+        if not value or value != value.strip() or any(
+            unicodedata.category(character).startswith("C") for character in value
+        ):
+            raise ValueError("relative_to_tts_more must be an unambiguous path")
+        normalized = value.replace("\\", "/")
+        parts = normalized.split("/")
+        if len(parts) != 2 or parts[0] != ".." or not parts[1] or parts[1] in {".", ".."}:
+            raise ValueError("relative_to_tts_more must name exactly one sibling directory")
+        if parts[1] != parts[1].strip() or ":" in parts[1]:
+            raise ValueError("relative_to_tts_more contains an ambiguous sibling name")
+        return normalized
 
 
 PROVIDER_ENGINE_DEFAULTS: dict[ProviderType, EngineName] = {
@@ -96,6 +177,8 @@ class VoiceProfile(BaseModel):
 
 
 class TTSServiceEndpoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     service_id: str
     service_kind: Literal["tts", "llm-parser"] = "tts"
     display_name: str = ""
@@ -124,6 +207,8 @@ class TTSServiceEndpoint(BaseModel):
     source_profile: SourceProfile | None = None
     catalog_provider: CatalogProvider | None = None
     setup_state: SetupState | None = None
+    control_kind: Literal["generic", "portable-package"] = "generic"
+    portable_locator: PortableServiceLocator | None = None
 
     @model_validator(mode="after")
     def populate_compat_fields(self) -> "TTSServiceEndpoint":
@@ -132,6 +217,10 @@ class TTSServiceEndpoint(BaseModel):
         if self.mode == "external" and self.network_scope == "localhost" and self.source_profile != "local_endpoint":
             self.network_scope = "commercial" if self.cost_policy or "paid_provider" in self.capabilities else "lan"
         if self.mode == "external":
+            self.managed = False
+        if self.control_kind == "portable-package" and (
+            self.portable_locator is None or self.mode != "local" or self.network_scope != "localhost"
+        ):
             self.managed = False
         if self.provider_type is None:
             if self.engine and self.engine.value in ProviderType._value2member_map_:

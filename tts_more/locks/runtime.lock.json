@@ -2,6 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "python_version": "3.11",
+  "import_probe": "import fastapi,torch; from indextts.infer_v2 import IndexTTS2",
   "dependency_mode": "uv-check-requirements",
   "required_free_bytes": 21474836480,
   "auto_order": ["cu128", "cu126", "cpu"],

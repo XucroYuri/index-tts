@@ -32,11 +32,13 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.28"
-      - name: Validate controlled integration and immutable locks
+      - name: Validate one-click portable contract and immutable locks
         shell: pwsh
         run: |
           uv lock --check
           python tts_more\tests\test_portable_integration.py -v
+          if (-not (Select-String -LiteralPath Start.cmd -Pattern 'Invoke-PortableStart.ps1' -Quiet)) { throw 'Start.cmd bypasses the portable controller' }
+          if (-not (Test-Path -LiteralPath '使用说明-先看这里.txt' -PathType Leaf)) { throw 'portable root guide is missing' }
       - name: Build bootstrap and prove full is prohibited
         shell: pwsh
         env:

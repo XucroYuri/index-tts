@@ -36,18 +36,31 @@
     "v2": {
       "type": "object",
       "required": [
-        "schema_version", "component", "version", "build_id", "package_profile",
-        "platform", "api_contract", "source", "integration", "runtime", "models",
-        "data_root", "launchers", "endpoint", "capabilities", "sha256_manifest", "licenses"
+        "schema_version", "component", "package_id", "release_version", "version", "build_id",
+        "package_profile", "platform", "api_contract", "protocol", "source", "integration",
+        "runtime", "models", "data_root", "data", "launchers", "endpoint", "capabilities",
+        "sha256_manifest", "licenses"
       ],
       "properties": {
         "schema_version": {"const": 2},
         "component": {"enum": ["tts-more", "gpt-sovits", "indextts", "cosyvoice"]},
+        "package_id": {"type": "string", "minLength": 1},
+        "release_version": {"type": "string", "minLength": 1},
         "version": {"type": "string", "minLength": 1},
         "build_id": {"type": "string", "minLength": 1},
         "package_profile": {"enum": ["bootstrap", "full"]},
         "platform": {"const": "windows-x64"},
         "api_contract": {"const": "tts-more-v1"},
+        "protocol": {
+          "type": "object",
+          "required": ["name", "version", "controller_range"],
+          "properties": {
+            "name": {"const": "tts-more-v1"},
+            "version": {"type": "string", "minLength": 1},
+            "controller_range": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
         "source": {
           "type": "object",
           "required": ["repository", "revision"],
@@ -93,6 +106,17 @@
           "additionalProperties": false
         },
         "data_root": {"$ref": "#/$defs/relativePath"},
+        "data": {
+          "type": "object",
+          "required": ["user", "local", "cache", "operations"],
+          "properties": {
+            "user": {"$ref": "#/$defs/relativePath"},
+            "local": {"$ref": "#/$defs/relativePath"},
+            "cache": {"$ref": "#/$defs/relativePath"},
+            "operations": {"$ref": "#/$defs/relativePath"}
+          },
+          "additionalProperties": false
+        },
         "launchers": {
           "type": "object",
           "required": ["initialize", "start", "stop", "repair", "build"],
@@ -111,8 +135,8 @@
           "properties": {
             "default_url": {"type": "string", "pattern": "^http://"},
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "health_path": {"const": "/health"},
-            "capabilities_path": {"const": "/capabilities"},
+            "health_path": {"type": "string", "minLength": 1, "pattern": "^/"},
+            "capabilities_path": {"type": "string", "minLength": 1, "pattern": "^/"},
             "bind_policy": {"enum": ["loopback", "trusted-lan"]}
           },
           "additionalProperties": false

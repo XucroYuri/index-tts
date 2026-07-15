@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "locale": "zh-CN",
+  "errors": {
+    "DOWNLOAD_NETWORK_INTERRUPTED": {
+      "event": "下载因网络中断而暂停。",
+      "cause": "网络连接、代理或下载源暂时不可用。",
+      "unchanged_data": "已完成的分块下载、用户项目和模型不会被删除。",
+      "next_action": "检查网络或代理后再次运行 Start.cmd，下载会从安全边界继续。"
+    },
+    "DISK_SPACE_INSUFFICIENT": {
+      "event": "初始化因磁盘可用空间不足而停止。",
+      "cause": "包所在磁盘无法容纳临时运行时或模型事务。",
+      "unchanged_data": "现有运行时、用户项目和已验证缓存保持不变。",
+      "next_action": "释放包所在磁盘空间，或把整个包移动到空间充足的可写磁盘后重试。"
+    },
+    "CUDA_PROBE_FAILED": {
+      "event": "CUDA 能力检测或验证未通过。",
+      "cause": "显卡驱动、设备能力或锁定的 CUDA 运行时不匹配。",
+      "unchanged_data": "用户数据和已经验证的下载不会被修改。",
+      "next_action": "更新驱动后重试，或在 Initialize.cmd 中选择 CPU 配置。"
+    },
+    "PORT_IN_USE": {
+      "event": "服务端口已被其他进程占用。",
+      "cause": "目标端口存在监听者，且无法证明它属于当前便携包。",
+      "unchanged_data": "占用端口的进程不会被终止，包内数据不会改变。",
+      "next_action": "关闭已确认的占用程序，或用 -PortOverride 选择另一个本机端口。"
+    },
+    "PACKAGE_NOT_WRITABLE": {
+      "event": "便携包所在位置不可写。",
+      "cause": "包可能仍在 ZIP 预览、Program Files 或只读位置中。",
+      "unchanged_data": "控制器不会请求管理员权限，也不会改写包外文件。",
+      "next_action": "完整解压并把包移动到当前用户可写目录后重试。"
+    },
+    "PACKAGE_CORRUPT": {
+      "event": "便携包缺少文件、清单无效或 Full 资产校验失败。",
+      "cause": "下载或复制不完整，或包内受控文件与构建清单不一致。",
+      "unchanged_data": "Start.cmd 不会为 Full 包下载替代资产，用户数据保持不变。",
+      "next_action": "重新获取并完整解压同一版本的包；Bootstrap 包可再次运行 Start.cmd 初始化。"
+    }
+  }
+}

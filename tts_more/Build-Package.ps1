@@ -97,14 +97,17 @@ $capabilities = switch ([string]$config.component) {
     "cosyvoice" { @("tts", "sft", "zero-shot", "cross-lingual", "instruct", "artifact-transfer") }
 }
 $manifest = [ordered]@{
-    schema_version = 2; component = [string]$config.component; version = $Version
+    schema_version = 2; component = [string]$config.component
+    package_id = [string]$config.component; release_version = $Version; version = $Version
     build_id = "$($config.component)-$Version-$($revision.Substring(0, 12))"; package_profile = $profileName
     platform = "windows-x64"; api_contract = "tts-more-v1"
+    protocol = @{ name = "tts-more-v1"; version = "1.0"; controller_range = ">=0.2.0,<0.3.0" }
     source = @{ repository = [string]$config.upstream_repository; revision = $revision }
     integration = @{ version = [string]$integrationManifest.integration_version; source_revision = [string]$integrationManifest.source_revision; bundle_sha256 = $integrationSha }
     runtime = @{ python_version = [string]$config.python; device_profiles = @($deviceProfiles); lock = "tts_more/locks/runtime.lock.json"; state_path = "data/local/install-state.json" }
     models = @{ lock = "tts_more/locks/models.lock.json"; required = $true }
     data_root = "data/local"
+    data = @{ user = "data/user"; local = "data/local"; cache = "data/cache"; operations = "data/local/operations" }
     launchers = @{ initialize = "Initialize.cmd"; start = "Start.cmd"; stop = "Stop.cmd"; repair = "Repair.cmd"; build = "Build-Package.ps1" }
     endpoint = @{ default_url = "http://127.0.0.1:$($config.port)"; port = [int]$config.port; health_path = "/health"; capabilities_path = "/capabilities"; bind_policy = "loopback" }
     capabilities = $capabilities; sha256_manifest = "SHA256SUMS.txt"; licenses = "THIRD_PARTY_NOTICES.json"

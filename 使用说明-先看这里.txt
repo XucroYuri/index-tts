@@ -1,0 +1,16 @@
+IndexTTS Windows 便携版使用说明
+
+常用入口
+- Start.cmd：启动 tts-more-v1 worker（默认端口：9881）。
+- Start-WebUI.cmd：启动上游原生 WebUI；它与 worker 是两个独立入口。
+- Initialize.cmd：检查并补齐当前包的运行时、依赖和默认模型。
+- Stop.cmd：仅停止由当前便携包启动的 worker。
+- Repair.cmd：校验资产，并只重新获取缺失或损坏的内容，不删除用户数据。
+
+两种交付形态
+- Bootstrap：首次运行需要联网完成初始化；初始化成功之后可离线运行。
+- Full：仅在本地生成，包含已验证的运行资产，可断网直接运行；禁止上传 GitHub。
+
+运行说明
+- 运行时无需安装系统 Python、Conda 或 Node，也不要把这些系统路径写入配置。
+- 路径可能因电脑而异；请整体移动或解压文件夹，所有运行路径必须保持包内相对路径。

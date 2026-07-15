@@ -12,15 +12,19 @@ $ErrorActionPreference = "Stop"
 $ValidationScript = Join-Path $PSScriptRoot "Portable-Validation.ps1"
 if (!(Test-Path -LiteralPath $ValidationScript -PathType Leaf)) { throw "Portable-Validation.ps1 is missing" }
 . $ValidationScript
-$Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)
-$Root = if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
-    [System.IO.Path]::GetFullPath((Split-Path -Parent $Bundle))
-} else {
-    [System.IO.Path]::GetFullPath($PackageRoot)
-}
-$config = Get-Content -LiteralPath (Join-Path $Bundle "component.json") -Raw | ConvertFrom-Json
+$PathsScript = Join-Path $PSScriptRoot "Portable-Paths.ps1"
+if (!(Test-Path -LiteralPath $PathsScript -PathType Leaf)) { throw "Portable-Paths.ps1 is missing" }
+. $PathsScript
+$paths = Get-PortableWorkerPaths -BundleRoot $PSScriptRoot -PackageRoot $PackageRoot
+$Bundle = $paths.BundleRoot
+$Root = $paths.PackageRoot
+$SourceRoot = $paths.SourceRoot
+$config = $paths.Config
+$env:PYTHONPATH = $SourceRoot
 $runtimeLockPath = Join-Path $Bundle "locks\runtime.lock.json"
 $modelLockPath = Join-Path $Bundle "locks\models.lock.json"
+$toolchainLockPath = Join-Path $Bundle "locks\toolchain.lock.json"
+$ToolchainLockRelative = $toolchainLockPath.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
 $runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
 $modelLock = Get-Content -LiteralPath $modelLockPath -Raw | ConvertFrom-Json
 if (!$modelLock.complete) {
@@ -118,7 +122,7 @@ if ((Test-PortableLockedAssets -Root $Root -ModelLock $modelLockPath) -and (Test
 if ($Repair) { Write-Host "repairing only missing or invalid locked assets; user data is preserved" }
 
 $bootstrap = Join-Path $Bundle "bootstrap-conda.ps1"
-$Conda = (& $bootstrap -CacheRoot "data/cache/portable/conda" -LockPath "tts_more/locks/toolchain.lock.json" -PackageRoot $Root -OperationRoot $OperationRoot -CancelFile $CancelFile -PassThru | Select-Object -Last 1)
+$Conda = (& $bootstrap -CacheRoot "data/cache/portable/conda" -LockPath $ToolchainLockRelative -PackageRoot $Root -OperationRoot $OperationRoot -CancelFile $CancelFile -PassThru | Select-Object -Last 1)
 if ($LASTEXITCODE -eq 20) { exit 20 }
 $CondaRoot = Split-Path -Parent (Split-Path -Parent $Conda)
 $BootstrapPython = Join-Path $CondaRoot "python.exe"
@@ -184,12 +188,12 @@ if ($LASTEXITCODE -ne 0) { throw "locked uv download failed" }
 & $StagePython -m pip install --no-deps $uvWheel
 $UvExe = Join-Path $staging "Scripts\uv.exe"
 if ($runtimeLock.dependency_mode -in @("uv-project", "uv-check-requirements")) {
-    & $UvExe lock --check --project $Root
+    & $UvExe lock --check --project $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw "upstream uv.lock drift detected" }
 }
 if ($runtimeLock.dependency_mode -eq "uv-project") {
     $requirements = Join-Path $staging "frozen-requirements.txt"
-    & $UvExe export --frozen --no-dev --no-emit-project --project $Root --output-file $requirements
+    & $UvExe export --frozen --no-dev --no-emit-project --project $SourceRoot --output-file $requirements
     & $UvExe pip install --python $StagePython --requirement $requirements
 } else {
     $installArguments = @("pip", "install", "--python", $StagePython, "--requirement", (Join-Path $Bundle "locks\$([string]$profile.dependency_lock)"))

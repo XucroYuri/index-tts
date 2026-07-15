@@ -51,9 +51,13 @@ V2_REQUIRED_FIELDS = (*V2_REQUIRED_FIELDS, "package_id", "release_version", "pro
 V2_LAUNCHERS = ("initialize", "start", "stop", "repair", "build")
 DEVICE_PROFILES = {"auto", "cu128", "cu126", "cpu"}
 RELEASE_FORBIDDEN_PATH = re.compile(
-    r"(^|/)(?:\.git|\.venv|__pycache__)(?:/|$)|"
+    r"(^|/)(?:\.git|\.venv|__pycache__|artifacts?|caches?|\.cache)(?:/|$)|"
+    r"(^|/)\.env(?:\.[^/]+)?$|"
     r"\.(?:safetensors|ckpt|pth|pt|t7|onnx|bin)$",
     re.IGNORECASE,
+)
+RELEASE_FORBIDDEN_MODEL_DIRECTORIES = frozenset(
+    {"pretrained_models", "checkpoints", "sovits_weights", "gpt_weights"}
 )
 SAFE_PACKAGE_ROOT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$")
 
@@ -128,6 +132,8 @@ def audit_release_zip(path: Path) -> dict[str, object]:
                 payload = json.loads(archive.read(manifests[0]).decode("utf-8-sig"))
                 if payload.get("package_profile") != "bootstrap":
                     errors.append(f"GitHub release upload refused for profile={payload.get('package_profile')}")
+                if payload.get("schema_version") == 2 and isinstance(payload.get("launchers"), dict):
+                    _audit_v2_user_layout(archive, payload, relative_names, errors)
             for relative, name in relative_names.items():
                 parts = tuple(part for part in relative.split("/") if part)
                 private_data = len(parts) >= 2 and parts[0] == "data" and parts[1] in {
@@ -136,12 +142,105 @@ def audit_release_zip(path: Path) -> dict[str, object]:
                     "cache",
                     "models",
                 }
-                if (parts and parts[0] == "runtime") or private_data or RELEASE_FORBIDDEN_PATH.search(relative):
+                directory_parts = parts if archive.getinfo(name).is_dir() else parts[:-1]
+                model_data = any(
+                    part in RELEASE_FORBIDDEN_MODEL_DIRECTORIES for part in directory_parts
+                )
+                if (
+                    (parts and parts[0] == "runtime")
+                    or private_data
+                    or model_data
+                    or RELEASE_FORBIDDEN_PATH.search(relative)
+                ):
                     errors.append(f"forbidden release asset: {relative}")
                     break
     except (OSError, ValueError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid release ZIP: {exc}")
     return {"valid": not errors, "errors": errors, "path": str(path)}
+
+
+def _audit_v2_user_layout(
+    archive: zipfile.ZipFile,
+    payload: dict[str, Any],
+    relative_names: dict[str, str],
+    errors: list[str],
+) -> None:
+    required_root = {"使用说明-先看这里.txt", "app", "package", "licenses"}
+    present_roots = {relative.split("/", 1)[0] for relative in relative_names}
+    if not required_root <= present_roots:
+        errors.append("portable package is missing the normal-user app/package/licenses layout or root guide")
+        return
+    for name in V2_LAUNCHERS:
+        relative = str(payload["launchers"].get(name) or "").replace("\\", "/").casefold()
+        if relative not in relative_names:
+            errors.append(f"portable package root launcher is missing: {name}")
+            return
+    license_path = str(payload.get("licenses") or "").replace("\\", "/").casefold()
+    if not license_path.startswith("licenses/") or license_path not in relative_names:
+        errors.append("portable package licenses must be stored under licenses/")
+        return
+    if not any(relative.startswith("app/") for relative in relative_names):
+        errors.append("portable package source is missing from app/")
+        return
+
+    component = str(payload.get("component") or "")
+    if component not in {"gpt-sovits", "indextts", "cosyvoice"}:
+        return
+    if any(relative.startswith("tts_more/") for relative in relative_names):
+        errors.append("worker integration bundle must be staged under app/tts_more")
+        return
+    component_path = "app/tts_more/component.json"
+    runtime_lock = str(_mapping(payload.get("runtime")).get("lock") or "").replace("\\", "/").casefold()
+    model_lock = str(_mapping(payload.get("models")).get("lock") or "").replace("\\", "/").casefold()
+    if component_path not in relative_names or runtime_lock != "app/tts_more/locks/runtime.lock.json" or model_lock != "app/tts_more/locks/models.lock.json":
+        errors.append("worker package manifest does not point to the staged app/tts_more locks")
+        return
+    try:
+        component_config = json.loads(
+            archive.read(relative_names[component_path]).decode("utf-8-sig")
+        )
+        model_payload = json.loads(archive.read(relative_names[model_lock]).decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        errors.append(f"worker staged metadata is invalid: {exc}")
+        return
+    if component_config.get("source_root") != "app":
+        errors.append("worker component source_root must be app")
+        return
+    required_paths = model_payload.get("required_paths")
+    assets = model_payload.get("assets")
+    if (
+        not isinstance(required_paths, list)
+        or not isinstance(assets, list)
+        or any(not isinstance(asset, dict) for asset in assets)
+    ):
+        errors.append("worker staged model lock paths are invalid")
+        return
+    raw_locked_paths = [*required_paths, *(asset.get("target") for asset in assets)]
+    canonical_locked_paths: list[str] = []
+    try:
+        for raw_path in raw_locked_paths:
+            if (
+                not isinstance(raw_path, str)
+                or not raw_path
+                or not _is_relative_package_path(raw_path)
+            ):
+                raise ValueError("invalid model lock path")
+            canonical_locked_paths.append(_canonical_relative_path(raw_path))
+    except ValueError:
+        errors.append("worker staged model lock paths are invalid")
+        return
+    if not canonical_locked_paths or any(
+        not path.startswith("app/") or path.startswith("app/app/")
+        for path in canonical_locked_paths
+    ):
+        errors.append("worker model lock paths must be prefixed with app/ exactly once")
+        return
+    embedded_locked_paths = sorted(set(canonical_locked_paths) & set(relative_names))
+    if embedded_locked_paths:
+        errors.append(
+            "worker bootstrap contains locked model asset: "
+            f"{relative_names[embedded_locked_paths[0]]}"
+        )
 
 
 def verify_sha256_manifest(package_root: Path) -> dict[str, object]:

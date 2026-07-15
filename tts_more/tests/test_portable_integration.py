@@ -554,8 +554,10 @@ $startProcesses = @(Get-ContractCommands $processAssignments[0].Right "Start-Pro
 Assert-Contract ($startProcesses.Count -eq 1) "worker must start exactly one service process from the top-level process assignment"
 $filePath = Get-ContractParameterArgument $startProcesses[0] "FilePath"
 $argumentList = Get-ContractParameterArgument $startProcesses[0] "ArgumentList"
+$workingDirectory = Get-ContractParameterArgument $startProcesses[0] "WorkingDirectory"
 Assert-Contract (Test-ContractVariable $filePath "Python") "worker service process does not use package-private Python"
 Assert-Contract (Test-ContractVariable $argumentList "arguments") "worker service process does not use the uvicorn arguments"
+Assert-Contract (Test-ContractVariable $workingDirectory "SourceRoot") "worker service process does not use the resolved upstream source root"
 
 $forbiddenParameters = @($worker.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] -and $node.Name.VariablePath.UserPath -match "(?i)python" }, $true))
 $forbiddenOverrides = @($worker.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -ceq "env:TTS_MORE_PYTHON_EXE" }, $true))
@@ -729,7 +731,7 @@ class PortableIntegrationContractTests(unittest.TestCase):
 
     def test_bootstrap_builder_recursively_excludes_and_rejects_git_metadata(self) -> None:
         builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
-        self.assertIn('if ($entry.Name -eq ".git") { continue }', builder)
+        self.assertIn('$entry.Name -in $ExcludedNames', builder)
         self.assertIn('$_.Name -eq ".git" -or', builder)
 
 

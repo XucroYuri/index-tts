@@ -99,16 +99,33 @@ function Get-PackageContext {
         }
     }
 
-    $bundle = if (Test-Path -LiteralPath (Join-Path $resolvedRoot "tts_more\component.json") -PathType Leaf) {
-        Join-Path $resolvedRoot "tts_more"
-    } else {
-        Join-Path $resolvedRoot "scripts"
+    $sourceRoot = $resolvedRoot
+    $bundle = Join-Path $resolvedRoot "scripts"
+    foreach ($candidate in @(
+        (Join-Path $resolvedRoot "app\tts_more"),
+        (Join-Path $resolvedRoot "tts_more")
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $candidate "component.json") -PathType Leaf) {
+            $bundle = $candidate
+            break
+        }
     }
     $componentConfig = $null
     $componentConfigPath = Join-Path $bundle "component.json"
     if (Test-Path -LiteralPath $componentConfigPath -PathType Leaf) {
         try { $componentConfig = Get-Content -LiteralPath $componentConfigPath -Raw | ConvertFrom-Json } catch {
             Throw-PortableStartError "PACKAGE_CORRUPT" "The component configuration is not valid JSON"
+        }
+        $pathsScript = Join-Path $bundle "Portable-Paths.ps1"
+        if (!(Test-Path -LiteralPath $pathsScript -PathType Leaf)) {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Portable-Paths.ps1 is missing from the worker bundle"
+        }
+        . $pathsScript
+        try {
+            $workerPaths = Get-PortableWorkerPaths -BundleRoot $bundle -PackageRoot $resolvedRoot
+            $sourceRoot = $workerPaths.SourceRoot
+        } catch {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "The worker source_root is invalid: $($_.Exception.Message)"
         }
     }
 
@@ -203,6 +220,7 @@ function Get-PackageContext {
 
     return [pscustomobject]@{
         Root = $resolvedRoot
+        SourceRoot = $sourceRoot
         Bundle = $bundle
         IsStaged = [bool]$isStaged
         Profile = $profile
@@ -223,6 +241,21 @@ function Get-PackageContext {
         HealthPath = $healthPath
         EndpointUrl = "http://127.0.0.1:$port"
     }
+}
+
+function Resolve-PortableStartRoot {
+    $bundle = [IO.Path]::GetFullPath($PSScriptRoot)
+    $pathsScript = Join-Path $bundle "Portable-Paths.ps1"
+    if (
+        (Test-Path -LiteralPath (Join-Path $bundle "component.json") -PathType Leaf) -and
+        (Test-Path -LiteralPath $pathsScript -PathType Leaf)
+    ) {
+        . $pathsScript
+        try { return [string](Get-PortableWorkerPaths -BundleRoot $bundle).PackageRoot } catch {
+            Throw-PortableStartError "PACKAGE_CORRUPT" "Unable to resolve worker package root: $($_.Exception.Message)"
+        }
+    }
+    return [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 }
 
 function Assert-PackageWritable {
@@ -550,7 +583,7 @@ function Clear-StaleActivePointer {
 # Dot-sourcing is used only by dependency-free tests of the controller's atomic helpers.
 if ($MyInvocation.InvocationName -eq ".") { return }
 
-$root = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$root = [IO.Path]::GetFullPath((Resolve-PortableStartRoot))
 $operation = ""
 $lock = $null
 $activePath = ""

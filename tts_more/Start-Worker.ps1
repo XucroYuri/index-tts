@@ -10,9 +10,15 @@ $ErrorActionPreference = "Stop"
 $ValidationScript = Join-Path $PSScriptRoot "Portable-Validation.ps1"
 if (!(Test-Path -LiteralPath $ValidationScript -PathType Leaf)) { throw "Portable-Validation.ps1 is missing" }
 . $ValidationScript
-$Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)
-$Root = if ([string]::IsNullOrWhiteSpace($PackageRoot)) { [System.IO.Path]::GetFullPath((Split-Path -Parent $Bundle)) } else { [System.IO.Path]::GetFullPath($PackageRoot) }
-$config = Get-Content -LiteralPath (Join-Path $Bundle "component.json") -Raw | ConvertFrom-Json
+$PathsScript = Join-Path $PSScriptRoot "Portable-Paths.ps1"
+if (!(Test-Path -LiteralPath $PathsScript -PathType Leaf)) { throw "Portable-Paths.ps1 is missing" }
+. $PathsScript
+$paths = Get-PortableWorkerPaths -BundleRoot $PSScriptRoot -PackageRoot $PackageRoot
+$Bundle = $paths.BundleRoot
+$Root = $paths.PackageRoot
+$SourceRoot = $paths.SourceRoot
+$config = $paths.Config
+$env:PYTHONPATH = $SourceRoot
 $Port = if ($null -ne $PortOverride) { [int]$PortOverride } elseif ($env:TTS_MORE_PORT) { [int]$env:TTS_MORE_PORT } else { [int]$config.port }
 $Python = Join-Path $Root "runtime\live\python.exe"
 $RuntimeLock = Get-Content -LiteralPath (Join-Path $Bundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
@@ -42,11 +48,11 @@ if ($listeners.Count -gt 0) {
     throw "PORT_IN_USE: worker port $Port is occupied by $($owners | ConvertTo-Json -Compress). No process was terminated."
 }
 switch ([string]$config.component) {
-    "gpt-sovits" { $env:TTS_MORE_GPTSOVITS_REPO = $Root }
-    "indextts" { $env:TTS_MORE_INDEXTTS_REPO = $Root; $env:TTS_MORE_INDEXTTS_PYTHON = $Python }
-    "cosyvoice" { $env:TTS_MORE_COSYVOICE_REPO = $Root; $env:TTS_MORE_COSYVOICE_MODEL_DIR = (Join-Path $Root "pretrained_models\CosyVoice-300M") }
+    "gpt-sovits" { $env:TTS_MORE_GPTSOVITS_REPO = $SourceRoot }
+    "indextts" { $env:TTS_MORE_INDEXTTS_REPO = $SourceRoot; $env:TTS_MORE_INDEXTTS_PYTHON = $Python }
+    "cosyvoice" { $env:TTS_MORE_COSYVOICE_REPO = $SourceRoot; $env:TTS_MORE_COSYVOICE_MODEL_DIR = (Join-Path $SourceRoot "pretrained_models\CosyVoice-300M") }
 }
-$process = Start-Process -FilePath $Python -ArgumentList $arguments -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+$process = Start-Process -FilePath $Python -ArgumentList $arguments -WorkingDirectory $SourceRoot -WindowStyle Hidden -PassThru
 $created = $process.StartTime.ToUniversalTime().ToString("o")
 & $Python $Launcher write-process-record --package-root $Root --record-path $recordPath --pid $process.Id --parent-pid $PID --process-created-at $created --executable $Python --port $Port --build-id $buildId -- @arguments
 if ($LASTEXITCODE -ne 0) { throw "failed to write worker ownership record" }

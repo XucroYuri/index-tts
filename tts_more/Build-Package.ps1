@@ -11,6 +11,45 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if ($Profile -eq "Full" -and $env:GITHUB_ACTIONS -eq "true") { throw "profile=full is local-only and cannot be built by a GitHub upload workflow" }
 if ($Version -notmatch "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$") { throw "package Version must contain only ASCII letters, digits, dot, underscore, or hyphen (maximum 128 characters)" }
+
+function Assert-PortableWorkPath {
+    param([Parameter(Mandatory = $true)][string]$CandidatePath)
+    try {
+        $fullPath = [IO.Path]::GetFullPath($CandidatePath)
+        $volumeRoot = [IO.Path]::GetPathRoot($fullPath)
+    }
+    catch {
+        throw "WorkRoot path validation failed closed. Choose a different -WorkRoot path. Error: $($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($volumeRoot)) {
+        throw "WorkRoot path validation failed closed. Choose an absolute -WorkRoot path."
+    }
+    $pathsToCheck = @($volumeRoot)
+    $currentPath = $volumeRoot
+    foreach ($segment in @($fullPath.Substring($volumeRoot.Length) -split '[\\/]' | Where-Object { $_ })) {
+        $currentPath = Join-Path $currentPath $segment
+        $pathsToCheck += $currentPath
+    }
+    foreach ($currentPath in $pathsToCheck) {
+        try {
+            $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+        }
+        catch [System.Management.Automation.ItemNotFoundException] {
+            return $false
+        }
+        catch {
+            throw "WorkRoot path validation failed closed. Choose a different -WorkRoot path. Path: $currentPath. Error: $($_.Exception.Message)"
+        }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "WorkRoot path must not traverse a reparse point. Choose -WorkRoot outside junctions and symbolic links. Path: $currentPath"
+        }
+        if (!$item.PSIsContainer) {
+            throw "WorkRoot path contains an existing non-directory segment. Choose a different -WorkRoot path. Path: $currentPath"
+        }
+    }
+    return $true
+}
+
 $Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $Root = [System.IO.Path]::GetFullPath((Split-Path -Parent $Bundle))
 $config = Get-Content -LiteralPath (Join-Path $Bundle "component.json") -Raw | ConvertFrom-Json
@@ -30,6 +69,7 @@ if (
 ) {
     throw "WorkRoot must be outside source checkout. Set -WorkRoot to a directory outside '$Root' (for example C:\tm)."
 }
+[void](Assert-PortableWorkPath -CandidatePath $workBase)
 $workIdentity = "tts-more-worker-$PID-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
 $work = [IO.Path]::GetFullPath((Join-Path $workBase $workIdentity))
 $stage = Join-Path $work $packageName
@@ -160,6 +200,7 @@ function Get-CanonicalTextSha256 {
 Assert-PortableTreePathBudget
 try {
 New-Item -ItemType Directory -Force -Path $stage, $stageApp, (Join-Path $stage "package"), (Join-Path $stage "licenses") | Out-Null
+[void](Assert-PortableWorkPath -CandidatePath $stage)
 foreach ($entry in Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -notin $excluded -and $_.Name -notin $excludedFiles -and $_.Name -notmatch '^\.env(?:\..+)?$' -and $_.Name -notin $rootEntries }) {
     if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
     $destination = Join-Path $stageApp $entry.Name
@@ -324,7 +365,8 @@ Copy-Item -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -D
 Write-Host "Created $Profile package: $zip"
 }
 finally {
-    if (Test-Path -LiteralPath $work) {
+    $workPathExists = Assert-PortableWorkPath -CandidatePath $work
+    if ($workPathExists) {
         $resolvedWork = [IO.Path]::GetFullPath($work)
         $resolvedWorkParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedWork))
         $resolvedWorkLeaf = Split-Path -Leaf $resolvedWork

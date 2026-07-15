@@ -3,7 +3,8 @@ param(
     [ValidateSet("Bootstrap", "Full")][string]$Profile = "Bootstrap",
     [ValidateSet("Auto", "CU128", "CU126", "CPU")][string]$Device = "Auto",
     [string]$Version = "0.2.0",
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [string]$WorkRoot = ""
 )
 
 Set-StrictMode -Version Latest
@@ -19,7 +20,9 @@ $profileName = $Profile.ToLowerInvariant()
 if (!$OutputRoot) { $OutputRoot = Join-Path $Root "artifacts\portable\$profileName" }
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $packageName = "$($config.component)-$Version-windows-x64-$profileName"
-$work = Join-Path $Root "artifacts\portable\.work\$($config.component)-$profileName"
+$workBase = if ($WorkRoot) { [IO.Path]::GetFullPath($WorkRoot) } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) }
+$workIdentity = "tts-more-worker-$PID-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
+$work = [IO.Path]::GetFullPath((Join-Path $workBase $workIdentity))
 $stage = Join-Path $work $packageName
 $revision = (& git -C $Root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch "^[0-9a-f]{40}$") { throw "source revision is not available" }
@@ -30,6 +33,77 @@ if ($null -ne $config.PSObject.Properties['submodules']) {
         if (!(Test-Path -LiteralPath $path) -or !(Get-ChildItem -LiteralPath $path -Force | Select-Object -First 1)) { throw "locked submodule is not initialized: $($submodule.Name)" }
         $actual = (& git -C $path rev-parse HEAD).Trim()
         if ($actual -ne [string]$submodule.Value) { throw "submodule drift: $($submodule.Name) expected $($submodule.Value), found $actual" }
+    }
+}
+
+$excluded = @(".git", ".venv", "runtime", "data", "artifacts", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+$recursiveExcluded = @(".git", ".venv", "artifacts", "cache", ".cache", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+$excludedFiles = @(".env", ".env.local")
+$rootEntries = @("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Build-Package.ps1", "Start-WebUI.cmd", "使用说明-先看这里.txt")
+$stageApp = Join-Path $stage "app"
+$safeWindowsPathBudget = 240
+
+function Update-PortablePathBudget {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectedPath,
+        [Parameter(Mandatory = $true)][ref]$MaximumLength,
+        [Parameter(Mandatory = $true)][ref]$MaximumPath
+    )
+    $length = $ProjectedPath.Length
+    if ($length -gt $MaximumLength.Value) {
+        $MaximumLength.Value = $length
+        $MaximumPath.Value = $ProjectedPath
+    }
+}
+
+function Measure-PortableTreePathBudget {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [string[]]$ExcludedNames = @(),
+        [string[]]$ExcludedFiles = @(),
+        [Parameter(Mandatory = $true)][ref]$MaximumLength,
+        [Parameter(Mandatory = $true)][ref]$MaximumPath
+    )
+    Update-PortablePathBudget -ProjectedPath $Destination -MaximumLength $MaximumLength -MaximumPath $MaximumPath
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if ($entry.Name -in $ExcludedNames -or $entry.Name -in $ExcludedFiles -or $entry.Name -match '^\.env(?:\..+)?$') { continue }
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $target = Join-Path $Destination $entry.Name
+        Update-PortablePathBudget -ProjectedPath $target -MaximumLength $MaximumLength -MaximumPath $MaximumPath
+        if ($entry.PSIsContainer) {
+            Measure-PortableTreePathBudget -Source $entry.FullName -Destination $target -ExcludedNames $ExcludedNames -ExcludedFiles $ExcludedFiles -MaximumLength $MaximumLength -MaximumPath $MaximumPath
+        }
+    }
+}
+
+function Assert-PortableTreePathBudget {
+    $maximumLength = 0
+    $maximumPath = ""
+    $generatedPaths = @(
+        $stage,
+        $stageApp,
+        (Join-Path $stage "package\tts-more-package.json"),
+        (Join-Path $stage "licenses\UPSTREAM-LICENSE"),
+        (Join-Path $stage "licenses\INTEGRATION-LICENSE"),
+        (Join-Path $stage "licenses\INTEGRATION-NOTICE"),
+        (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json"),
+        (Join-Path $stage "SHA256SUMS.txt")
+    ) + @($rootEntries | ForEach-Object { Join-Path $stage $_ })
+    foreach ($projectedPath in $generatedPaths) {
+        Update-PortablePathBudget -ProjectedPath $projectedPath -MaximumLength ([ref]$maximumLength) -MaximumPath ([ref]$maximumPath)
+    }
+    foreach ($entry in Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -notin $excluded -and $_.Name -notin $excludedFiles -and $_.Name -notmatch '^\.env(?:\..+)?$' -and $_.Name -notin $rootEntries }) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $destination = Join-Path $stageApp $entry.Name
+        if ($entry.PSIsContainer) {
+            Measure-PortableTreePathBudget -Source $entry.FullName -Destination $destination -ExcludedNames $recursiveExcluded -ExcludedFiles $excludedFiles -MaximumLength ([ref]$maximumLength) -MaximumPath ([ref]$maximumPath)
+        } else {
+            Update-PortablePathBudget -ProjectedPath $destination -MaximumLength ([ref]$maximumLength) -MaximumPath ([ref]$maximumPath)
+        }
+    }
+    if ($maximumLength -gt $safeWindowsPathBudget) {
+        throw "worker package staging path budget exceeded before copy: projected path length $maximumLength exceeds the safe Windows limit $safeWindowsPathBudget. Use -WorkRoot with a shorter external directory (for example C:\tm). Projected path: $maximumPath"
     }
 }
 
@@ -74,13 +148,9 @@ function Get-CanonicalTextSha256 {
     finally { $hasher.Dispose() }
 }
 
-if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $stage, (Join-Path $stage "app"), (Join-Path $stage "package"), (Join-Path $stage "licenses") | Out-Null
-$excluded = @(".git", ".venv", "runtime", "data", "artifacts", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
-$recursiveExcluded = @(".git", ".venv", "artifacts", "cache", ".cache", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
-$excludedFiles = @(".env", ".env.local")
-$rootEntries = @("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Build-Package.ps1", "Start-WebUI.cmd", "使用说明-先看这里.txt")
-$stageApp = Join-Path $stage "app"
+Assert-PortableTreePathBudget
+try {
+New-Item -ItemType Directory -Force -Path $stage, $stageApp, (Join-Path $stage "package"), (Join-Path $stage "licenses") | Out-Null
 foreach ($entry in Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -notin $excluded -and $_.Name -notin $excludedFiles -and $_.Name -notmatch '^\.env(?:\..+)?$' -and $_.Name -notin $rootEntries }) {
     if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
     $destination = Join-Path $stageApp $entry.Name
@@ -243,3 +313,15 @@ if (Test-Path -LiteralPath $selectedLock) {
 Copy-Item -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -Destination "$zip.licenses.json"
 @{ schema_version=1; component=$config.component; profile=$profileName; manifest_valid=$true; bootstrap_audit=$auditPassed; machine_path_scan=$true; generated_at=[DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath "$zip.acceptance.json" -Encoding UTF8
 Write-Host "Created $Profile package: $zip"
+}
+finally {
+    if (Test-Path -LiteralPath $work) {
+        $resolvedWork = [IO.Path]::GetFullPath($work)
+        $resolvedWorkParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedWork))
+        $resolvedWorkLeaf = Split-Path -Leaf $resolvedWork
+        if (![string]::Equals($resolvedWorkParent.TrimEnd("\", "/"), $workBase.TrimEnd("\", "/"), [StringComparison]::OrdinalIgnoreCase) -or $resolvedWorkLeaf -ne $workIdentity) {
+            throw "refusing to clean a worker package staging directory that is not the unique directory created by this build: $resolvedWork"
+        }
+        Remove-Item -LiteralPath $resolvedWork -Recurse -Force
+    }
+}

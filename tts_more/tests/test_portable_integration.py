@@ -727,6 +727,11 @@ class PortableIntegrationContractTests(unittest.TestCase):
         builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
         self.assertEqual(2, len(re.findall(r"safetensors\|ckpt\|pth\|pt\|t7\|onnx\|bin", builder)))
 
+    def test_bootstrap_builder_recursively_excludes_and_rejects_git_metadata(self) -> None:
+        builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
+        self.assertIn('if ($entry.Name -eq ".git") { continue }', builder)
+        self.assertIn('$_.Name -eq ".git" -or', builder)
+
 
 if __name__ == "__main__":
     unittest.main()

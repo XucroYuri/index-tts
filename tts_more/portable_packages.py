@@ -51,7 +51,7 @@ V2_REQUIRED_FIELDS = (*V2_REQUIRED_FIELDS, "package_id", "release_version", "pro
 V2_LAUNCHERS = ("initialize", "start", "stop", "repair", "build")
 DEVICE_PROFILES = {"auto", "cu128", "cu126", "cpu"}
 RELEASE_FORBIDDEN_PATH = re.compile(
-    r"(^|/)(?:\.venv|__pycache__)(?:/|$)|"
+    r"(^|/)(?:\.git|\.venv|__pycache__)(?:/|$)|"
     r"\.(?:safetensors|ckpt|pth|pt|t7|onnx|bin)$",
     re.IGNORECASE,
 )

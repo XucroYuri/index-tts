@@ -37,6 +37,7 @@ function Copy-PortableTree {
     param([string]$Source, [string]$Destination)
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if ($entry.Name -eq ".git") { continue }
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         $target = Join-Path $Destination $entry.Name
         if ($entry.PSIsContainer) {
@@ -121,7 +122,7 @@ if ($Profile -eq "Full") {
 }
 if ($Profile -eq "Bootstrap") {
     $forbidden = @(Get-ChildItem -LiteralPath $stage -Recurse -Force | Where-Object {
-        $_.FullName -match "[\\/](\.venv|runtime[\\/]live|data[\\/](cache|local|models))([\\/]|$)" -or $_.Name -match "\.(safetensors|ckpt|pth|pt|t7|onnx|bin)$"
+        $_.Name -eq ".git" -or $_.FullName -match "[\\/](\.venv|runtime[\\/]live|data[\\/](cache|local|models))([\\/]|$)" -or $_.Name -match "\.(safetensors|ckpt|pth|pt|t7|onnx|bin)$"
     })
     if ($forbidden.Count -gt 0) { throw "bootstrap audit found forbidden runtime/model asset: $($forbidden.FullName -join ', ')" }
 }

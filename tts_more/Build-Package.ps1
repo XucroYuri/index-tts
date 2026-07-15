@@ -21,6 +21,15 @@ if (!$OutputRoot) { $OutputRoot = Join-Path $Root "artifacts\portable\$profileNa
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $packageName = "$($config.component)-$Version-windows-x64-$profileName"
 $workBase = if ($WorkRoot) { [IO.Path]::GetFullPath($WorkRoot) } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) }
+$normalizedSourceRoot = $Root.TrimEnd("\", "/")
+$normalizedWorkBase = $workBase.TrimEnd("\", "/")
+$sourceRootBoundary = $normalizedSourceRoot + [IO.Path]::DirectorySeparatorChar
+if (
+    [string]::Equals($normalizedWorkBase, $normalizedSourceRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $normalizedWorkBase.StartsWith($sourceRootBoundary, [StringComparison]::OrdinalIgnoreCase)
+) {
+    throw "WorkRoot must be outside source checkout. Set -WorkRoot to a directory outside '$Root' (for example C:\tm)."
+}
 $workIdentity = "tts-more-worker-$PID-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
 $work = [IO.Path]::GetFullPath((Join-Path $workBase $workIdentity))
 $stage = Join-Path $work $packageName

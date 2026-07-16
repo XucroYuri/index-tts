@@ -58,9 +58,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "bootstrap ZIP release audit failed" }
           & $buildPython tts_more\portable_packages.py audit-release-assets --directory artifacts\portable\bootstrap --expected-component indextts --expected-version $version
           if ($LASTEXITCODE -ne 0) { throw "bootstrap release asset set or embedded package_profile audit failed" }
-          $blocked = $false
-          try { .\Build-Package.ps1 -Profile Full -Device CPU -Version $version } catch { $blocked = $_.Exception.Message -match "profile=full" }
-          if (!$blocked) { throw "full profile was not blocked in GitHub Actions" }
+          $hostPowerShell = (Get-Process -Id $PID).Path
+          $previousErrorActionPreference = $ErrorActionPreference
+          $fullOutput = @()
+          $fullExit = $null
+          try {
+            $ErrorActionPreference = "Continue"
+            $fullOutput = @(& $hostPowerShell -NoProfile -NonInteractive -File .\Build-Package.ps1 -Profile Full -Device CPU -Version $version 2>&1)
+            $fullExit = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
+          if ($null -eq $fullExit -or $fullExit -eq 0 -or (($fullOutput -join "`n") -notmatch "profile=full")) {
+            throw "full profile refusal probe failed: exit=$fullExit output=$($fullOutput -join ' | ')"
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: indextts-windows-bootstrap

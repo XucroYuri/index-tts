@@ -127,6 +127,33 @@ class ReleaseAssetGateContractTests(unittest.TestCase):
         self.assertNotIn("python tts_more\\portable_packages.py", build)
         self.assertNotIn("python -m pip install", build)
 
+    def test_full_refusal_uses_child_powershell_exit_code_and_output(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        build = workflow.split("- name: Build bootstrap and prove full is prohibited", 1)[1]
+        build = build.split("- uses: actions/upload-artifact", 1)[0]
+
+        self.assertIn("$hostPowerShell = (Get-Process -Id $PID).Path", build)
+        self.assertIn(
+            "$previousErrorActionPreference = $ErrorActionPreference",
+            build,
+        )
+        self.assertIn('$ErrorActionPreference = "Continue"', build)
+        self.assertIn("& $hostPowerShell -NoProfile -NonInteractive", build)
+        self.assertIn("-File .\\Build-Package.ps1 -Profile Full", build)
+        self.assertIn("$fullExit = $LASTEXITCODE", build)
+        self.assertIn(
+            "$ErrorActionPreference = $previousErrorActionPreference",
+            build,
+        )
+        self.assertIn('$null -eq $fullExit', build)
+        self.assertIn('$fullExit -eq 0', build)
+        self.assertIn('$fullOutput -join "`n"', build)
+        self.assertIn('-notmatch "profile=full"', build)
+        self.assertNotIn(
+            "try { .\\Build-Package.ps1 -Profile Full",
+            build,
+        )
+
     def test_fake_gh_accepts_exact_six_and_percent_encodes_tag(self) -> None:
         gate = load_release_gate()
         expected = expected_names()

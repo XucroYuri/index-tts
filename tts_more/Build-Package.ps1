@@ -287,7 +287,7 @@ if (!$modelLock.complete) { throw "release package blocked by incomplete model l
 $profileName = $Profile.ToLowerInvariant()
 if (!$OutputRoot) { $OutputRoot = Join-Path $Root "artifacts\portable\$profileName" }
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
-$packageName = "$($config.component)-$Version-windows-x64-$profileName"
+$packageName = if ($Profile -eq "Full") { "$($config.component)-$Version-windows-x64-full-staging" } else { "$($config.component)-$Version-windows-x64-$profileName" }
 $workBase = if ($WorkRoot) { [IO.Path]::GetFullPath($WorkRoot) } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) }
 $normalizedSourceRoot = $Root.TrimEnd("\", "/")
 $normalizedWorkBase = $workBase.TrimEnd("\", "/")
@@ -546,9 +546,30 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "package\tts-more-package.json") -Encoding UTF8
 @{ schema_version = 1; component = $config.component; integration_license = "Apache-2.0"; upstream_license = "app/LICENSE"; model_license = $modelLock.license; model_repository = $modelLock.upstream_repository; model_snapshot_revision = $modelLock.snapshot_revision } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -Encoding UTF8
 
+$buildPython = if ($env:TTS_MORE_BUILD_PYTHON) { $env:TTS_MORE_BUILD_PYTHON } elseif (Test-Path -LiteralPath (Join-Path $Root "runtime\live\python.exe")) { Join-Path $Root "runtime\live\python.exe" } elseif (Test-Path -LiteralPath (Join-Path $Root ".venv\Scripts\python.exe")) { Join-Path $Root ".venv\Scripts\python.exe" } else {
+    $conda = (& (Join-Path $Bundle "bootstrap-conda.ps1") -CacheRoot "data/cache/portable/conda" -LockPath "tts_more/locks/toolchain.lock.json" -PassThru | Select-Object -Last 1)
+    Join-Path (Split-Path -Parent (Split-Path -Parent $conda)) "python.exe"
+}
+$resolvedProfile = ""
 if ($Profile -eq "Full") {
     & (Join-Path $stagedBundle "Initialize.ps1") -Device $Device -PackageRoot $stage
     if ($LASTEXITCODE -ne 0) { throw "full package initialization failed" }
+    $statePath = Join-Path $stage "data\local\install-state.json"
+    $profileOutput = @(& $buildPython (Join-Path $Bundle "portable_packages.py") resolve-full-profile --state $statePath --component ([string]$config.component) --build-id ([string]$manifest.build_id) --requested-profile $Device.ToLowerInvariant() 2>&1)
+    $profileExit = $LASTEXITCODE
+    if ($profileExit -ne 0 -or $profileOutput.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$profileOutput[0])) {
+        throw "requested device profile does not match resolved profile or install state is invalid"
+    }
+    $resolvedProfile = ([string]$profileOutput[0]).Trim().ToLowerInvariant()
+    $manifest.runtime.device_profiles = @($resolvedProfile)
+    $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "package\tts-more-package.json") -Encoding UTF8
+    $nameOutput = @(& $buildPython (Join-Path $Bundle "portable_packages.py") full-package-name --component ([string]$config.component) --version $Version --resolved-profile $resolvedProfile 2>&1)
+    $nameExit = $LASTEXITCODE
+    if ($nameExit -ne 0 -or $nameOutput.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$nameOutput[0])) {
+        throw "shared Full package naming rule failed for worker"
+    }
+    $packageName = ([string]$nameOutput[0]).Trim()
+    if ($packageName.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCase)) { $packageName = $packageName.Substring(0, $packageName.Length - 4) }
 }
 if ($Profile -eq "Bootstrap") {
     $forbidden = @(Get-ChildItem -LiteralPath $stage -Recurse -Force | Where-Object {
@@ -571,16 +592,14 @@ $sumPath = Join-Path $stage "SHA256SUMS.txt"
     "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
 }) | Set-Content -LiteralPath $sumPath -Encoding UTF8
 
-$buildPython = if ($env:TTS_MORE_BUILD_PYTHON) { $env:TTS_MORE_BUILD_PYTHON } elseif (Test-Path -LiteralPath (Join-Path $Root "runtime\live\python.exe")) { Join-Path $Root "runtime\live\python.exe" } elseif (Test-Path -LiteralPath (Join-Path $Root ".venv\Scripts\python.exe")) { Join-Path $Root ".venv\Scripts\python.exe" } else {
-    $conda = (& (Join-Path $Bundle "bootstrap-conda.ps1") -CacheRoot "data/cache/portable/conda" -LockPath "tts_more/locks/toolchain.lock.json" -PassThru | Select-Object -Last 1)
-    Join-Path (Split-Path -Parent (Split-Path -Parent $conda)) "python.exe"
-}
 & $buildPython (Join-Path $stagedBundle "portable_packages.py") validate-manifest --manifest (Join-Path $stage "package\tts-more-package.json") --package-root $stage
 if ($LASTEXITCODE -ne 0) { throw "staged schema v2 manifest validation failed" }
+& $buildPython (Join-Path $stagedBundle "portable_packages.py") verify-sha256 --package-root $stage
+if ($LASTEXITCODE -ne 0) { throw "staged package SHA256SUMS exact coverage validation failed" }
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $zip = Join-Path $OutputRoot "$packageName.zip"
-& $buildPython (Join-Path $stagedBundle "portable_packages.py") create-zip --package-root $stage --output $zip
+& $buildPython (Join-Path $stagedBundle "portable_packages.py") create-zip --package-root $stage --output $zip --archive-root $packageName
 if ($LASTEXITCODE -ne 0) { throw "ZIP64 package creation failed" }
 $auditPassed = $false
 if ($Profile -eq "Bootstrap") {
@@ -590,17 +609,27 @@ if ($Profile -eq "Bootstrap") {
 }
 $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $([IO.Path]::GetFileName($zip))" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
-@{ component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; integration_revision=$integrationManifest.source_revision; model_snapshot=$modelLock.snapshot_revision; sha256=$hash } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$zip.provenance.json" -Encoding UTF8
+$provenance = [ordered]@{ component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; integration_revision=$integrationManifest.source_revision; model_snapshot=$modelLock.snapshot_revision; sha256=$hash }
+if ($Profile -eq "Full") { $provenance.resolved_profile = $resolvedProfile }
+$provenance | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$zip.provenance.json" -Encoding UTF8
 
-$selectedLock = Join-Path $Bundle "locks\requirements-$($Device.ToLowerInvariant()).lock.txt"
-if ($Device -eq "Auto") { $selectedLock = Join-Path $Bundle "locks\requirements-cu128.lock.txt" }
+$lockProfile = if ($Profile -eq "Full") { $resolvedProfile } elseif ($Device -eq "Auto") { "cu128" } else { $Device.ToLowerInvariant() }
+$selectedLock = Join-Path $Bundle "locks\requirements-$lockProfile.lock.txt"
 $packages = @()
 if (Test-Path -LiteralPath $selectedLock) {
     foreach ($line in Get-Content -LiteralPath $selectedLock) { if ($line -match "^([A-Za-z0-9_.-]+)==([^ \\]+)") { $spdxId = ($Matches[1] -replace '[^A-Za-z0-9.-]', '-'); $packages += @{ SPDXID="SPDXRef-Package-$spdxId"; name=$Matches[1]; versionInfo=$Matches[2]; downloadLocation="NOASSERTION"; filesAnalyzed=$false } } }
 }
-@{ spdxVersion="SPDX-2.3"; dataLicense="CC0-1.0"; SPDXID="SPDXRef-DOCUMENT"; name=$packageName; documentNamespace="https://tts-more.local/spdx/$($config.component)/$Version/$hash"; creationInfo=@{created=[DateTime]::UtcNow.ToString("o");creators=@("Tool: TTS-More-Build-Package-2.0.0")}; packages=$packages } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$zip.spdx.json" -Encoding UTF8
-Copy-Item -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -Destination "$zip.licenses.json"
-@{ schema_version=1; component=$config.component; profile=$profileName; manifest_valid=$true; bootstrap_audit=$auditPassed; machine_path_scan=$true; generated_at=[DateTime]::UtcNow.ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath "$zip.acceptance.json" -Encoding UTF8
+$deliveryResolvedProfile = if ($Profile -eq "Full") { $resolvedProfile } else { "none" }
+$deliveryComment = "TTS-More delivery binding: component=$($config.component);version=$Version;profile=$profileName;resolved_profile=$deliveryResolvedProfile;source_revision=$revision;sha256=$hash"
+@{ spdxVersion="SPDX-2.3"; dataLicense="CC0-1.0"; SPDXID="SPDXRef-DOCUMENT"; name=$packageName; documentNamespace="https://tts-more.local/spdx/$($config.component)/$Version/$hash"; comment=$deliveryComment; creationInfo=@{created=[DateTime]::UtcNow.ToString("o");creators=@("Tool: TTS-More-Build-Package-2.0.0")}; packages=$packages } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$zip.spdx.json" -Encoding UTF8
+$licenseSidecar = Get-Content -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -Raw | ConvertFrom-Json
+$licenseDelivery = [ordered]@{ component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; sha256=$hash }
+if ($Profile -eq "Full") { $licenseDelivery.resolved_profile = $resolvedProfile }
+$licenseSidecar | Add-Member -NotePropertyName delivery -NotePropertyValue $licenseDelivery -Force
+$licenseSidecar | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath "$zip.licenses.json" -Encoding UTF8
+$acceptance = [ordered]@{ schema_version=1; component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; sha256=$hash; manifest_valid=$true; schema_audit=$true; path_audit=$true; sha256_manifest_audit=$true; bootstrap_audit=$auditPassed; machine_path_scan=$true; generated_at=[DateTime]::UtcNow.ToString("o") }
+if ($Profile -eq "Full") { $acceptance.resolved_profile = $resolvedProfile }
+$acceptance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$zip.acceptance.json" -Encoding UTF8
 Write-Host "Created $Profile package: $zip"
 }
 finally {

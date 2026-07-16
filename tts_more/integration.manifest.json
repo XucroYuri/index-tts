@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "01d28168cb64e9ea58a124c129d8013ac5b48f99",
+  "source_revision": "a0a01dfda26d7d59c5b141f658f29c809c467c75",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -10,7 +10,7 @@
     "Start-WebUI.cmd": "07e669f197dde89d98ea43d7fa51e31a542d09225a00827429825405751d4d20",
     "Start.cmd": "1b8034201664752783220b50e2bac8c45e423eb99754a2c61dc9e39f2195d9a2",
     "Stop.cmd": "d44fe7a5bf570ccfb476d9bc197fe1874a57bda47b72e1eda566e8c2c3cef340",
-    "tts_more/Build-Package.ps1": "995419f77046369982a84dd1e6157481166ef02e9ee8383195f05cdc353d53e0",
+    "tts_more/Build-Package.ps1": "162218401b2715016fce4b71e31d210675fa01601643a0f42ba9047e13ed60ad",
     "tts_more/Initialize.ps1": "c13d18d2d8d278de69545cfa435485473688a7dfea8b46a3668aff52a71a2356",
     "tts_more/Invoke-PortableStart.ps1": "2c1eabf2ca1e4b1904107764049487e3f07440696b9b2ef53000803bfacd0ad6",
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",
@@ -37,7 +37,7 @@
     "tts_more/app/workers/indextts_line_launcher.py": "4f3deb9e42cc9be5a2c348cf4f3ef424378c2958b5dee88d3c3e0b6e5bc8f10a",
     "tts_more/app/workers/indextts_subprocess.py": "0a2044912ca96b71c852863e303a7dc2fc7ef5e0f3da0fda90ddfb0677b9068f",
     "tts_more/app/workers/indextts_worker.py": "ee852d20cb3e3a191df236206104f792d953a04b8147e3fb3544a5ad96d67fb8",
-    "tts_more/app/workers/runtime.py": "4fb7a85d8191bafe7680352d6f60916fc54e2e285c2ff1a562342d4e53f61a48",
+    "tts_more/app/workers/runtime.py": "0ccfe290e0055e3f488bae30225f9500ca2ffe1e46df4ee325d0032dc4d54e94",
     "tts_more/bootstrap-conda.ps1": "ce1fab6861cf42a0db3c4bc8f1361f2a4d70cf4acb22138513d0423792dfd841",
     "tts_more/component.json": "b903e58f1ec4b9959c6ff1d40ab4d4d214598643256947d561433a24d0835ed6",
     "tts_more/error-catalog.zh-CN.json": "47d93fb3ce0bfb2fdd58c8d7370ff46ab426c2465245a2de3565ec13a426f5e5",
@@ -53,7 +53,7 @@
     "tts_more/portable_install.py": "4a03b8bf7bb24caf333f975df4f07e716d9273cf95a5368f27966e95ac1ba1ed",
     "tts_more/portable_launcher.py": "b1924b3e8f52c6bbb32af5dddb8948a03c1b80713f6bcb93853f239af860c23d",
     "tts_more/portable_operations.py": "4cba1e6b8e6d74363dce497eb8d857942be5ec0277c9a7c649a4da1078339aad",
-    "tts_more/portable_packages.py": "9af2fb126e4d6033999420f583a4239ab278c0e1e2a8797f6acbc1d93dc363c8",
+    "tts_more/portable_packages.py": "390e58db8106d778076d42bab080534d7fc8ff56466cea8e8a625d38493845dd",
     "tts_more/select-portable-folder.ps1": "fd8253ccefd21deabac7529e05d44be63e394a93f1a96da17dd6e5ce2d075116",
     "tts_more/tests/__init__.py": "fefc949246e59922d99bee259403e4845d4ddded5611e8584f0c9eb80997ae53",
     "tts_more/tests/test_portable_integration.py": "bfcd3a53e6c5044b154aa58e29f701cff3175582ba3ad946413f4e45e0e1f973",
@@ -62,6 +62,7 @@
     "tts_more/tts_more_worker/cosyvoice.py": "c6b6980597e3a252033fce1d040eb601f0514ae3de362f6804a13ff0646f345b",
     "tts_more/tts_more_worker/gpt_sovits.py": "ad30396f0c4f6644e6ab06de15ff780891da9708cbdf18f0f635a86c45b3209f",
     "tts_more/tts_more_worker/indextts.py": "90f0ceb9780e5e2d23318f693cb2a769dc22e81c1e2f89edcba3ff319a1164c4",
+    "tts_more/verify-release-asset-set.py": "9eef84993541644f9fb224358012494607fc75be883d289a998e4f323cc6285b",
     "\u4f7f\u7528\u8bf4\u660e-\u5148\u770b\u8fd9\u91cc.txt": "e0e9f85e834df9aac49a62f5855ca9e58a7b5979ab787010cccd3443f63a346b"
   }
 }

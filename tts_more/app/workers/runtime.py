@@ -3,13 +3,9 @@ from __future__ import annotations
 import gc
 import os
 import re
-import subprocess
 from typing import Any
 
-from app.subprocess_safety import noninteractive_subprocess_kwargs
-
-
-_DEVICE_UUID_CACHE: dict[int | str, str | None] = {}
+_DEVICE_UUID_CACHE: dict[tuple[str, int], str | None] = {}
 
 
 def worker_runtime_status(*, loaded: bool, model: Any, device_hint: str | None = None) -> dict[str, Any]:
@@ -28,7 +24,7 @@ def worker_runtime_status(*, loaded: bool, model: Any, device_hint: str | None =
         if torch.cuda.is_available():
             index = _logical_cuda_index(device_hint, torch.cuda.current_device())
             device = device_hint or f"cuda:{index}"
-            device_uuid = _cuda_device_uuid(index)
+            device_uuid = _cuda_device_uuid(index, torch.cuda)
             cuda_runtime = str(getattr(getattr(torch, "version", None), "cuda", "") or "") or None
             memory["allocated_bytes"] = int(torch.cuda.memory_allocated(index))
             memory["reserved_bytes"] = int(torch.cuda.memory_reserved(index))
@@ -48,53 +44,24 @@ def worker_runtime_status(*, loaded: bool, model: Any, device_hint: str | None =
     }
 
 
-def _cuda_device_uuid(index: int) -> str | None:
+def _cuda_device_uuid(index: int, cuda: Any) -> str | None:
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    physical_index = index
-    uuid_prefix: str | None = None
-    if visible_devices is not None:
-        devices = [item.strip() for item in visible_devices.split(",") if item.strip()]
-        if index >= len(devices):
-            return None
-        mapped = devices[index]
-        if mapped.startswith("GPU-"):
-            uuid_prefix = mapped
-        elif mapped.startswith("MIG-"):
-            return None
-        try:
-            if uuid_prefix is None:
-                physical_index = int(mapped)
-        except ValueError:
-            return None
-    cache_key: int | str = uuid_prefix.casefold() if uuid_prefix else physical_index
+    devices = [item.strip() for item in visible_devices.split(",") if item.strip()] if visible_devices is not None else []
+    if visible_devices is not None and index >= len(devices):
+        return None
+    cache_key = ((visible_devices or "").casefold(), index)
     if cache_key in _DEVICE_UUID_CACHE:
         return _DEVICE_UUID_CACHE[cache_key]
     value: str | None = None
     try:
-        completed = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,uuid",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-            **noninteractive_subprocess_kwargs(),
-        )
-        for line in completed.stdout.splitlines():
-            raw_index, separator, raw_uuid = line.partition(",")
-            if not separator:
-                continue
-            candidate_uuid = raw_uuid.strip()
-            matches_uuid = uuid_prefix is not None and candidate_uuid.casefold().startswith(uuid_prefix.casefold())
-            matches_index = uuid_prefix is None and int(raw_index.strip()) == physical_index
-            if matches_uuid or matches_index:
-                value = candidate_uuid or None
-                break
-    except (OSError, ValueError, subprocess.SubprocessError):
-        value = None
+        raw_uuid = getattr(cuda.get_device_properties(index), "uuid", None)
+        value = str(raw_uuid).strip() or None if raw_uuid is not None else None
+    except (RuntimeError, AttributeError, TypeError, ValueError):
+        pass
+    if value is None and devices:
+        visible_identifier = devices[index]
+        if visible_identifier.casefold().startswith("gpu-"):
+            value = visible_identifier
     _DEVICE_UUID_CACHE[cache_key] = value
     return value
 

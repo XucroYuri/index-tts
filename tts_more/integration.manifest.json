@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "a0a01dfda26d7d59c5b141f658f29c809c467c75",
+  "source_revision": "8ba406186e22ca308f34f008163583d8c424cbda",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -39,6 +39,8 @@
     "tts_more/app/workers/indextts_worker.py": "ee852d20cb3e3a191df236206104f792d953a04b8147e3fb3544a5ad96d67fb8",
     "tts_more/app/workers/runtime.py": "0ccfe290e0055e3f488bae30225f9500ca2ffe1e46df4ee325d0032dc4d54e94",
     "tts_more/bootstrap-conda.ps1": "ce1fab6861cf42a0db3c4bc8f1361f2a4d70cf4acb22138513d0423792dfd841",
+    "tts_more/build-tools/pyproject.toml": "a4458584cc389d7f082eae0748ec3791b38dc59df00f1ae6c7d48de2db3289e5",
+    "tts_more/build-tools/uv.lock": "fc8c8cdcfe329b3126106e8b4f57143bfbbb63f3419f8e1ec9d1540df040f9db",
     "tts_more/component.json": "b903e58f1ec4b9959c6ff1d40ab4d4d214598643256947d561433a24d0835ed6",
     "tts_more/error-catalog.zh-CN.json": "47d93fb3ce0bfb2fdd58c8d7370ff46ab426c2465245a2de3565ec13a426f5e5",
     "tts_more/import-portable-data.py": "4c8ba4083cf96903c9b012d51336c7c73c71fac37d75a8aac723760b53e3d2fb",

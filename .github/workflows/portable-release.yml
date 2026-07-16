@@ -42,17 +42,21 @@ jobs:
           if (-not (Test-Path -LiteralPath '使用说明-先看这里.txt' -PathType Leaf)) { throw 'portable root guide is missing' }
       - name: Build bootstrap and prove full is prohibited
         shell: pwsh
-        env:
-          TTS_MORE_BUILD_PYTHON: python
         run: |
+          $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "tts-more-build-tools"
+          uv sync --locked --project tts_more/build-tools
+          if ($LASTEXITCODE -ne 0) { throw "locked portable build-tools sync failed" }
+          $buildPython = Join-Path $env:UV_PROJECT_ENVIRONMENT "Scripts\python.exe"
+          if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) { throw "locked portable build-tools Python is missing" }
+          $env:TTS_MORE_BUILD_PYTHON = $buildPython
           $version = $env:PACKAGE_VERSION -replace '^v', ''
           $version = $version -replace '[^0-9A-Za-z._-]', '-'
           .\Build-Package.ps1 -Profile Bootstrap -Device CPU -Version $version
           $zip = @(Get-ChildItem artifacts\portable\bootstrap\*.zip)
           if ($zip.Count -ne 1) { throw "expected exactly one bootstrap ZIP" }
-          python tts_more\portable_packages.py audit-release --zip $zip[0].FullName
+          & $buildPython tts_more\portable_packages.py audit-release --zip $zip[0].FullName
           if ($LASTEXITCODE -ne 0) { throw "bootstrap ZIP release audit failed" }
-          python tts_more\portable_packages.py audit-release-assets --directory artifacts\portable\bootstrap --expected-component indextts --expected-version $version
+          & $buildPython tts_more\portable_packages.py audit-release-assets --directory artifacts\portable\bootstrap --expected-component indextts --expected-version $version
           if ($LASTEXITCODE -ne 0) { throw "bootstrap release asset set or embedded package_profile audit failed" }
           $blocked = $false
           try { .\Build-Package.ps1 -Profile Full -Device CPU -Version $version } catch { $blocked = $_.Exception.Message -match "profile=full" }

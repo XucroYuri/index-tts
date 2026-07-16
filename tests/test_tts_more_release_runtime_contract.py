@@ -105,6 +105,28 @@ class ReleaseAssetGateContractTests(unittest.TestCase):
             'verify_asset_args+=(--expected-name "$asset_name")', publish
         )
 
+    def test_bootstrap_workflow_uses_locked_portable_build_tools_python(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        build = workflow.split("- name: Build bootstrap and prove full is prohibited", 1)[1]
+        build = build.split("- uses: actions/upload-artifact", 1)[0]
+
+        self.assertIn(
+            '$env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "tts-more-build-tools"',
+            build,
+        )
+        self.assertIn("uv sync --locked --project tts_more/build-tools", build)
+        self.assertIn(
+            '$buildPython = Join-Path $env:UV_PROJECT_ENVIRONMENT "Scripts\\python.exe"',
+            build,
+        )
+        self.assertIn('$env:TTS_MORE_BUILD_PYTHON = $buildPython', build)
+        self.assertEqual(
+            2,
+            build.count("& $buildPython tts_more\\portable_packages.py audit-release"),
+        )
+        self.assertNotIn("python tts_more\\portable_packages.py", build)
+        self.assertNotIn("python -m pip install", build)
+
     def test_fake_gh_accepts_exact_six_and_percent_encodes_tag(self) -> None:
         gate = load_release_gate()
         expected = expected_names()

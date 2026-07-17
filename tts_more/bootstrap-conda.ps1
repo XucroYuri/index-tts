@@ -12,10 +12,73 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Get-PortableFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() }
+    finally {
+        $stream.Dispose()
+        $sha256.Dispose()
+    }
+}
+
 function Resolve-PortableFullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Assert-WindowsSafeDirectName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [string]$RequiredExtension = ""
+    )
+    $deviceBase = [regex]::Match($Name, "^[^.]*").Value
+    if (
+        [string]::IsNullOrWhiteSpace($Name) -or
+        [IO.Path]::IsPathRooted($Name) -or
+        $Name -in @(".", "..") -or
+        $Name -ne [IO.Path]::GetFileName($Name) -or
+        $Name -match '[<>:"/\\|?*\x00-\x1F]' -or
+        $Name.EndsWith(" ") -or
+        $Name.EndsWith(".") -or
+        $deviceBase -match '^(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$' -or
+        (![string]::IsNullOrEmpty($RequiredExtension) -and !$Name.EndsWith($RequiredExtension, [StringComparison]::OrdinalIgnoreCase))
+    ) {
+        throw "$Label must be a Windows-safe direct file name"
+    }
+}
+
+function ConvertTo-LockedPositiveSize {
+    param([Parameter(Mandatory = $true)]$Value, [Parameter(Mandatory = $true)][string]$Label)
+    $size = [int64]0
+    if (
+        ![int64]::TryParse(
+            [string]$Value,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$size
+        ) -or $size -le 0
+    ) {
+        throw "$Label must be a positive integer"
+    }
+    return $size
+}
+
+function Assert-LockedAssetUrl {
+    param([Parameter(Mandatory = $true)][string]$Url, [Parameter(Mandatory = $true)][string]$Label)
+    $uri = $null
+    if (
+        [string]::IsNullOrWhiteSpace($Url) -or
+        $Url -ne $Url.Trim() -or
+        ![Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -or
+        !(($uri.Scheme -eq [Uri]::UriSchemeHttps) -or ($uri.Scheme -eq [Uri]::UriSchemeHttp -and $uri.IsLoopback)) -or
+        ![string]::IsNullOrEmpty($uri.UserInfo)
+    ) {
+        throw "$Label must be an absolute HTTPS URL (HTTP is allowed only for loopback fixtures)"
+    }
 }
 
 function Resolve-OperationContract {
@@ -85,6 +148,9 @@ $contract = Resolve-OperationContract -PackageRoot $PackageRoot -OperationRoot $
 $script:RepoRoot = $contract.PackageRoot
 $OperationRoot = $contract.OperationRoot
 $CancelFile = $contract.CancelFile
+if (!(Test-Path -LiteralPath $script:RepoRoot -PathType Container)) {
+    throw "PackageRoot is missing: $script:RepoRoot"
+}
 
 function Assert-PortableNotCancelled {
     if (![string]::IsNullOrWhiteSpace($CancelFile) -and (Test-Path -LiteralPath $CancelFile -PathType Leaf)) {
@@ -101,6 +167,50 @@ function Resolve-RepoPath {
     return [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot $Path))
 }
 
+function Assert-NoReparsePathSegments {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $boundary = $resolvedRoot + [IO.Path]::DirectorySeparatorChar
+    if (!$resolvedPath.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must remain below PackageRoot"
+    }
+    $relative = $resolvedPath.Substring($boundary.Length)
+    $current = $resolvedRoot
+    foreach ($segment in @($relative -split '[\\/]' | Where-Object { $_ })) {
+        $current = Join-Path $current $segment
+        if (!(Test-Path -LiteralPath $current)) { continue }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label must not traverse a reparse point: $current"
+        }
+    }
+}
+
+function Resolve-PackageChildPath {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Label)
+    $resolved = Resolve-RepoPath $Path
+    Assert-NoReparsePathSegments -Root $script:RepoRoot -Path $resolved -Label $Label
+    return $resolved
+}
+
+function Assert-DirectChildPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Parent,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $resolvedParent = [IO.Path]::GetFullPath($Parent).TrimEnd("\", "/")
+    $resolvedPathParent = [IO.Path]::GetFullPath((Split-Path -Parent ([IO.Path]::GetFullPath($Path)))).TrimEnd("\", "/")
+    if (![string]::Equals($resolvedPathParent, $resolvedParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must remain a direct child of its package-private cache"
+    }
+}
+
 function Get-LockedMiniforge {
     param([Parameter(Mandatory = $true)][string]$ResolvedLockPath)
 
@@ -108,13 +218,28 @@ function Get-LockedMiniforge {
         throw "Portable toolchain lock is missing: $ResolvedLockPath"
     }
     $lock = Get-Content -LiteralPath $ResolvedLockPath -Raw | ConvertFrom-Json
-    $toolchain = $lock.miniforge
-    foreach ($field in @("version", "archive", "url", "sha256")) {
-        if ([string]::IsNullOrWhiteSpace([string]$toolchain.$field)) {
-            throw "Portable toolchain lock field is missing: miniforge.$field"
-        }
+    if ([int]$lock.schema_version -ne 1) {
+        throw "Portable toolchain lock schema_version must be 1"
     }
-    return $toolchain
+    $toolchain = $lock.miniforge
+    $version = [string]$toolchain.version
+    Assert-WindowsSafeDirectName -Name $version -Label "Portable toolchain lock miniforge.version"
+    $archive = [string]$toolchain.archive
+    Assert-WindowsSafeDirectName -Name $archive -Label "Portable toolchain lock miniforge.archive" -RequiredExtension ".exe"
+    $url = [string]$toolchain.url
+    Assert-LockedAssetUrl -Url $url -Label "Portable toolchain lock miniforge.url"
+    $sha256 = [string]$toolchain.sha256
+    if ($sha256 -notmatch "^[0-9a-fA-F]{64}$") {
+        throw "Portable toolchain lock miniforge.sha256 must be exactly 64 hexadecimal characters"
+    }
+    $size = ConvertTo-LockedPositiveSize -Value $toolchain.size_bytes -Label "Portable toolchain lock miniforge.size_bytes"
+    return [pscustomobject]@{
+        version = $version
+        archive = $archive
+        url = $url
+        sha256 = $sha256.ToLowerInvariant()
+        size_bytes = $size
+    }
 }
 
 function Test-LockedSha256 {
@@ -123,8 +248,19 @@ function Test-LockedSha256 {
         [Parameter(Mandatory = $true)][string]$ExpectedSha256
     )
 
-    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = Get-PortableFileSha256 -Path $Path
     return $actual -eq $ExpectedSha256.ToLowerInvariant()
+}
+
+function Test-LockedArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+        [Parameter(Mandatory = $true)][int64]$ExpectedSize
+    )
+    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    if ((Get-Item -LiteralPath $Path -Force).Length -ne $ExpectedSize) { return $false }
+    return Test-LockedSha256 -Path $Path -ExpectedSha256 $ExpectedSha256
 }
 
 function Open-PortableHttpResponse {
@@ -195,12 +331,13 @@ function Receive-LockedArchive {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$Archive,
-        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+        [Parameter(Mandatory = $true)][int64]$ExpectedSize
     )
 
     $partial = "$Archive.partial"
     Assert-PortableNotCancelled
-    if ((Test-Path -LiteralPath $partial -PathType Leaf) -and (Test-LockedSha256 -Path $partial -ExpectedSha256 $ExpectedSha256)) {
+    if (Test-LockedArchive -Path $partial -ExpectedSha256 $ExpectedSha256 -ExpectedSize $ExpectedSize) {
         Move-Item -LiteralPath $partial -Destination $Archive -Force
         return
     }
@@ -249,8 +386,8 @@ function Receive-LockedArchive {
         $client.Dispose()
     }
     Assert-PortableNotCancelled
-    if (!(Test-LockedSha256 -Path $partial -ExpectedSha256 $ExpectedSha256)) {
-        throw "downloaded Miniforge .partial failed SHA-256 verification; it was not promoted: $partial"
+    if (!(Test-LockedArchive -Path $partial -ExpectedSha256 $ExpectedSha256 -ExpectedSize $ExpectedSize)) {
+        throw "downloaded Miniforge .partial failed size/SHA-256 verification; it was not promoted: $partial"
     }
     Move-Item -LiteralPath $partial -Destination $archive -Force
 }
@@ -263,13 +400,18 @@ function Ensure-BuildConda {
     )
 
     Assert-PortableNotCancelled
-    $cache = Resolve-RepoPath $CacheRoot
-    $resolvedLockPath = Resolve-RepoPath $LockPath
+    $cache = Resolve-PackageChildPath -Path $CacheRoot -Label "private Conda cache"
+    $resolvedLockPath = Resolve-PackageChildPath -Path $LockPath -Label "portable toolchain lock"
     $toolchain = Get-LockedMiniforge $resolvedLockPath
-    $archive = Join-Path $cache $toolchain.archive
-    $installRoot = Join-Path $cache ("miniforge-" + $toolchain.version)
-    $conda = Join-Path $installRoot "condabin/conda.bat"
-    $packageCache = Join-Path $cache "conda-pkgs"
+    $archive = Resolve-PackageChildPath -Path (Join-Path $cache $toolchain.archive) -Label "locked Miniforge archive"
+    Assert-DirectChildPath -Parent $cache -Path $archive -Label "locked Miniforge archive"
+    $partial = Resolve-PackageChildPath -Path "$archive.partial" -Label "locked Miniforge partial"
+    Assert-DirectChildPath -Parent $cache -Path $partial -Label "locked Miniforge partial"
+    $installRoot = Resolve-PackageChildPath -Path (Join-Path $cache ("miniforge-" + $toolchain.version)) -Label "private Miniforge installation"
+    Assert-DirectChildPath -Parent $cache -Path $installRoot -Label "private Miniforge installation"
+    $conda = Resolve-PackageChildPath -Path (Join-Path $installRoot "condabin/conda.bat") -Label "private Conda command"
+    $packageCache = Resolve-PackageChildPath -Path (Join-Path $cache "conda-pkgs") -Label "private Conda package cache"
+    Assert-DirectChildPath -Parent $cache -Path $packageCache -Label "private Conda package cache"
 
     $env:CONDA_PKGS_DIRS = $packageCache
     if (Test-Path -LiteralPath $conda -PathType Leaf) {
@@ -290,10 +432,10 @@ function Ensure-BuildConda {
     New-Item -ItemType Directory -Force -Path $cache, $packageCache | Out-Null
     if (!(Test-Path -LiteralPath $archive -PathType Leaf)) {
         Write-Host "[portable-conda] downloading pinned Miniforge archive"
-        Receive-LockedArchive -Url $toolchain.url -Archive $archive -ExpectedSha256 $toolchain.sha256
+        Receive-LockedArchive -Url $toolchain.url -Archive $archive -ExpectedSha256 $toolchain.sha256 -ExpectedSize $toolchain.size_bytes
     }
-    if (!(Test-LockedSha256 -Path $archive -ExpectedSha256 $toolchain.sha256)) {
-        throw "Miniforge SHA-256 does not match toolchain.lock.json: $archive"
+    if (!(Test-LockedArchive -Path $archive -ExpectedSha256 $toolchain.sha256 -ExpectedSize $toolchain.size_bytes)) {
+        throw "Miniforge size/SHA-256 does not match toolchain.lock.json: $archive"
     }
 
     $arguments = @(
@@ -303,6 +445,9 @@ function Ensure-BuildConda {
         "/S",
         "/D=$installRoot"
     )
+    $archive = Resolve-PackageChildPath -Path $archive -Label "locked Miniforge archive"
+    Assert-DirectChildPath -Parent $cache -Path $archive -Label "locked Miniforge archive"
+    $installRoot = Resolve-PackageChildPath -Path $installRoot -Label "private Miniforge installation"
     Write-Host "[portable-conda] installing private Miniforge below $cache"
     $process = Start-Process -FilePath $archive -ArgumentList $arguments -Wait -PassThru -NoNewWindow
     if ($process.ExitCode -ne 0) {

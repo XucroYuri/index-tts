@@ -740,6 +740,73 @@ class PortableIntegrationContractTests(unittest.TestCase):
         self.assertIn('$env:GITHUB_ACTIONS -eq "true"', builder)
         self.assertIn("audit-release --zip", builder)
 
+    def test_worker_initializer_uses_locked_embedded_python_and_uv_in_required_order(self) -> None:
+        worker_bundle = BUNDLE if BUNDLE.is_dir() else ROOT / "integrations" / "windows"
+        initializer = (worker_bundle / "Initialize.ps1").read_text(encoding="utf-8")
+        required = (
+            '. (Join-Path $Bundle "portable-python.ps1")',
+            "Install-PortablePythonRuntime",
+            "platform.python_version()",
+            "select-device",
+            "$runtimeLock.payloads",
+            "$modelLock.assets",
+            "--target",
+            "--link-mode",
+            '"copy"',
+            "pip check",
+            "& $PortableRuntime.Python -c $importProbe",
+        )
+        for token in required:
+            self.assertIn(token, initializer, token)
+        positions = [initializer.index(token) for token in required]
+        self.assertEqual(positions, sorted(positions))
+        publish_call = initializer.rindex("Publish-PortableRuntimeTransaction")
+        self.assertGreater(publish_call, initializer.index("& $PortableRuntime.Python -c $importProbe"))
+        self.assertGreater(initializer.rindex("write-state"), publish_call)
+        for forbidden in (
+            "bootstrap-conda.ps1",
+            "conda create",
+            "$Conda",
+            "$BootstrapPython",
+            "-m pip",
+            "Scripts\\uv.exe",
+            "base_prefix",
+        ):
+            self.assertNotIn(forbidden, initializer)
+        self.assertIn("$PortableRuntime.Python", initializer)
+        self.assertIn("$PortableRuntime.Uv", initializer)
+        self.assertIn("$PortableRuntime.SitePackages", initializer)
+        self.assertIn("function Publish-PortableRuntimeTransaction", initializer)
+
+    def test_worker_builder_stages_helper_and_applies_full_runtime_audits(self) -> None:
+        worker_bundle = BUNDLE if BUNDLE.is_dir() else ROOT / "integrations" / "windows"
+        builder = (worker_bundle / "Build-Package.ps1").read_text(encoding="utf-8")
+        for token in (
+            "portable-python.ps1",
+            "UV_CACHE_DIR",
+            "pyvenv.cfg",
+            "conda-meta",
+            "condabin",
+            "Miniforge",
+            "ReparsePoint",
+            "NumberOfLinks",
+            "machine-prefix",
+        ):
+            self.assertIn(token, builder, token)
+
+    def test_worker_stop_accepts_exact_patch_and_legacy_runtime_locks(self) -> None:
+        worker_bundle = BUNDLE if BUNDLE.is_dir() else ROOT / "integrations" / "windows"
+        stopper = (worker_bundle / "Stop-Worker.ps1").read_text(encoding="utf-8")
+        self.assertIn('@("3.10", "3.10.11", "3.11", "3.11.9")', stopper)
+
+    def test_portable_installer_operation_progress_is_bundle_relative(self) -> None:
+        installer = ((BUNDLE if BUNDLE.is_dir() else ROOT / "scripts") / "portable_install.py").read_text(encoding="utf-8")
+        self.assertNotIn("sys.path.insert(0, str(Path(__file__).resolve().parent))", installer)
+        self.assertIn('Path(__file__).resolve().with_name("portable_operations.py")', installer)
+        self.assertIn("importlib.util.spec_from_file_location", installer)
+        self.assertIn("append_event = operations.append_event", installer)
+        self.assertNotIn("from scripts.portable_operations import append_event", installer)
+
     def test_bootstrap_builder_removes_and_rejects_t7_model_weights(self) -> None:
         builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
         self.assertEqual(2, len(re.findall(r"safetensors\|ckpt\|pth\|pt\|t7\|onnx\|bin", builder)))

@@ -4,12 +4,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -93,7 +94,7 @@ def write_process_record(
         "parent_pid": int(parent_pid),
         "child_pids": [int(child) for child in child_pids],
         "process_created_at": process_created_at,
-        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
         "executable_path": str(executable),
         "command_sha256": command_digest,
         "port": int(port),
@@ -158,7 +159,9 @@ def listener_is_owned(
         process = (inspector or _inspect_process)(pid)
         if process is None or int(process.get("pid") or 0) != pid:
             return False
-        if str(process.get("created_at") or "") != str(payload.get("process_created_at") or ""):
+        if not _same_process_creation_time(
+            str(process.get("created_at") or ""), str(payload.get("process_created_at") or "")
+        ):
             return False
         if Path(str(process.get("executable_path") or "")).resolve(strict=False) != executable:
             return False
@@ -240,7 +243,9 @@ def stop_worker(
             raise RuntimeError("recorded PID identity does not match the running process")
         actual_executable = Path(str(process.get("executable_path") or "")).resolve(strict=False)
         created_at = str(process.get("created_at") or "")
-        if actual_executable != executable or created_at != str(payload.get("process_created_at") or ""):
+        if actual_executable != executable or not _same_process_creation_time(
+            created_at, str(payload.get("process_created_at") or "")
+        ):
             raise RuntimeError("recorded PID identity does not match the running process")
         actual_parent = process.get("parent_pid")
         if actual_parent is not None and int(actual_parent) != int(payload.get("parent_pid") or 0):
@@ -270,28 +275,108 @@ def stop_worker(
 def _inspect_process(pid: int) -> dict[str, object] | None:
     if os.name != "nt":
         return None
+    query_pid = _validated_query_integer(pid, label="process ID", minimum=1, maximum=2**31 - 1)
+    environment = os.environ.copy()
+    environment["TTS_MORE_PORTABLE_QUERY_PID"] = str(query_pid)
     command = [
         "powershell",
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "$p=Get-Process -Id $args[0] -ErrorAction SilentlyContinue; "
-        "$c=Get-CimInstance Win32_Process -Filter ('ProcessId='+$args[0]) -ErrorAction SilentlyContinue; "
-        "if($p){@{pid=$p.Id;parent_pid=if($c){$c.ParentProcessId}else{$null};"
-        "created_at=$p.StartTime.ToUniversalTime().ToString('o');executable_path=$p.Path;"
-        "command_line=if($c){$c.CommandLine}else{''}}|ConvertTo-Json -Compress}",
-        str(pid),
+        "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+        "$ErrorActionPreference='Stop';"
+        "$queryPid=[int]::Parse($env:TTS_MORE_PORTABLE_QUERY_PID,"
+        "[Globalization.CultureInfo]::InvariantCulture);"
+        "$c=Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $queryPid) "
+        "-ErrorAction Stop;"
+        "$processPayload=$null;"
+        "if($null -ne $c){"
+        "$processPayload=[ordered]@{pid=[int]$c.ProcessId;parent_pid=[int]$c.ParentProcessId;"
+        "created_at=if($null -ne $c.CreationDate){"
+        "$c.CreationDate.ToUniversalTime().ToString('o')}else{$null};"
+        "executable_path=$c.ExecutablePath;command_line=$c.CommandLine}};"
+        "[ordered]@{found=($null -ne $c);process=$processPayload}|ConvertTo-Json -Depth 3 -Compress;"
+        "exit 0",
     ]
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    output = completed.stdout.strip()
-    if not output:
-        return None
-    payload = json.loads(output)
-    if not isinstance(payload, dict):
-        return None
-    command_line = str(payload.pop("command_line", "") or "")
-    payload["command_args"] = _split_windows_command_line(command_line)[1:] if command_line else None
-    return payload
+    expected_keys = {"pid", "parent_pid", "created_at", "executable_path", "command_line"}
+    for attempt in range(3):
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+        )
+        if completed.returncode != 0 or completed.stderr.strip():
+            raise RuntimeError("unable to verify process ownership")
+        output = completed.stdout.strip()
+        if not output:
+            raise RuntimeError("unable to verify process ownership")
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("unable to verify process ownership") from exc
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"found", "process"}
+            or type(payload["found"]) is not bool
+        ):
+            raise RuntimeError("unable to verify process ownership")
+        process_payload = payload["process"]
+        if not payload["found"]:
+            if process_payload is not None:
+                raise RuntimeError("unable to verify process ownership")
+            return None
+        if not isinstance(process_payload, dict) or set(process_payload) != expected_keys:
+            raise RuntimeError("unable to verify process ownership")
+        payload = process_payload
+        parent_pid = payload["parent_pid"]
+        if (
+            type(payload["pid"]) is not int
+            or payload["pid"] != query_pid
+            or (parent_pid is not None and (type(parent_pid) is not int or parent_pid < 0))
+        ):
+            raise RuntimeError("unable to verify process ownership")
+        identity_values = (
+            payload["created_at"],
+            payload["executable_path"],
+            payload["command_line"],
+        )
+        if any(value is not None and not isinstance(value, str) for value in identity_values):
+            raise RuntimeError("unable to verify process ownership")
+        if any(not value for value in identity_values):
+            if attempt == 2:
+                raise RuntimeError("unable to verify process ownership")
+            time.sleep(0.01)
+            continue
+        try:
+            _normalize_process_creation_time(payload["created_at"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("unable to verify process ownership") from exc
+        command_line = str(payload.pop("command_line"))
+        payload["command_args"] = _split_windows_command_line(command_line)[1:]
+        return payload
+    raise RuntimeError("unable to verify process ownership")
+
+
+def _normalize_process_creation_time(value: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("process creation time is missing")
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    normalized = re.sub(r"(\.\d{6})\d+(?=[+-]\d{2}:\d{2}$)", r"\1", normalized)
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("process creation time must include an offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def _same_process_creation_time(left: str, right: str) -> bool:
+    try:
+        return _normalize_process_creation_time(left) == _normalize_process_creation_time(right)
+    except (TypeError, ValueError):
+        return False
 
 
 def _split_windows_command_line(command_line: str) -> list[str]:
@@ -329,24 +414,58 @@ def _listener_pids_for_port(port: int) -> set[int]:
     """Return all Windows listener PIDs so unknown owners can never be terminated."""
     if os.name != "nt":
         return set()
+    query_port = _validated_query_integer(port, label="port", minimum=1, maximum=65535)
+    environment = os.environ.copy()
+    environment["TTS_MORE_PORTABLE_QUERY_PORT"] = str(query_port)
     command = [
         "powershell",
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "@(Get-NetTCPConnection -State Listen -LocalPort $args[0] -ErrorAction SilentlyContinue | "
-        "Select-Object -ExpandProperty OwningProcess -Unique) | ConvertTo-Json -Compress",
-        str(port),
+        "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+        "$ErrorActionPreference='Stop';"
+        "$queryPort=[uint16]::Parse($env:TTS_MORE_PORTABLE_QUERY_PORT,"
+        "[Globalization.CultureInfo]::InvariantCulture);"
+        "$owners=@(Get-NetTCPConnection -State Listen -LocalPort $queryPort "
+        "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique);"
+        "[ordered]@{listener_pids=[object[]]$owners}|ConvertTo-Json -Compress",
     ]
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    if completed.returncode != 0 or completed.stderr.strip():
         raise RuntimeError("unable to verify port ownership")
     output = completed.stdout.strip()
     if not output:
-        return set()
-    payload = json.loads(output)
-    values = payload if isinstance(payload, list) else [payload]
-    return {int(value) for value in values}
+        raise RuntimeError("unable to verify port ownership")
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("unable to verify port ownership") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"listener_pids"}
+        or not isinstance(payload["listener_pids"], list)
+    ):
+        raise RuntimeError("unable to verify port ownership")
+    owners = payload["listener_pids"]
+    if any(type(value) is not int or value <= 0 for value in owners):
+        raise RuntimeError("unable to verify port ownership")
+    return set(owners)
+
+
+def _validated_query_integer(value: object, *, label: str, minimum: int, maximum: int) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{label} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{label} is outside the allowed range")
+    return value
 
 
 def _run_conda_unpack(live: Path) -> None:

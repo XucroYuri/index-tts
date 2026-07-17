@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable
 from uuid import UUID
@@ -207,7 +209,7 @@ def write_install_state(
         "runtime_lock_sha256": runtime_lock_sha256,
         "model_lock_sha256": model_lock_sha256,
         "ready": True,
-        "completed_at": datetime.now(UTC).isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     temporary = state_path.with_suffix(state_path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -333,6 +335,8 @@ def _copy_response(
         written += len(chunk)
         if progress:
             progress(written, total, url)
+    if total > 0 and written != total:
+        raise RuntimeError(f"incomplete HTTP download: received {written} of {total} bytes")
 
 
 def _response_total(response: Any, *, start: int) -> int:
@@ -359,10 +363,13 @@ def _operation_progress(operation_root: Path, asset_id: str) -> ProgressCallback
         complete = total > 0 and downloaded >= total
         if not complete and now - last_update < 0.25:
             return
-        try:
-            from portable_operations import append_event
-        except ModuleNotFoundError:
-            from scripts.portable_operations import append_event
+        operations_path = Path(__file__).resolve().with_name("portable_operations.py")
+        spec = importlib.util.spec_from_file_location("_tts_more_bundle_portable_operations", operations_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"unable to load bundled operation module: {operations_path}")
+        operations = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(operations)
+        append_event = operations.append_event
 
         percent = downloaded * 100.0 / total if total > 0 else None
         append_event(
@@ -439,6 +446,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         except PortableInstallCancelled:
             return 20
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0
     if args.command == "select-device":

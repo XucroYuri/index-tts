@@ -237,8 +237,75 @@ public static class TtsMorePortableDirectoryHandle
         ulong index = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
         return information.VolumeSerialNumber.ToString("X8") + ":" + index.ToString("X16");
     }
+
+    public static uint NumberOfLinks(string path)
+    {
+        const uint FileReadAttributes = 0x00000080;
+        const uint FileShareRead = 0x00000001;
+        const uint FileShareWrite = 0x00000002;
+        const uint FileShareDelete = 0x00000004;
+        const uint OpenExisting = 3;
+        const uint FileFlagOpenReparsePoint = 0x00200000;
+        using (SafeFileHandle handle = CreateFile(path, FileReadAttributes,
+            FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero,
+            OpenExisting, FileFlagOpenReparsePoint, IntPtr.Zero))
+        {
+            if (handle.IsInvalid) { throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot inspect staged file link count: " + path); }
+            ByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot inspect staged file link count: " + path); }
+            return information.NumberOfLinks;
+        }
+    }
+
+    public static bool ContainsAnyPrefix(string path, string[] prefixes)
+    {
+        var patterns = new System.Collections.Generic.List<byte[]>();
+        foreach (string prefix in prefixes)
+        {
+            if (String.IsNullOrEmpty(prefix)) { continue; }
+            patterns.Add(System.Text.Encoding.UTF8.GetBytes(prefix));
+            patterns.Add(System.Text.Encoding.Unicode.GetBytes(prefix));
+        }
+        if (patterns.Count == 0) { return false; }
+        int maximum = 1;
+        foreach (byte[] pattern in patterns) { maximum = Math.Max(maximum, pattern.Length); }
+        byte[] buffer = new byte[1048576 + maximum - 1];
+        using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open,
+            System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        {
+            int carry = 0;
+            int read;
+            while ((read = stream.Read(buffer, carry, 1048576)) > 0)
+            {
+                int length = carry + read;
+                foreach (byte[] pattern in patterns)
+                {
+                    for (int offset = 0; offset <= length - pattern.Length; offset++)
+                    {
+                        int index = 0;
+                        while (index < pattern.Length && buffer[offset + index] == pattern[index]) { index++; }
+                        if (index == pattern.Length) { return true; }
+                    }
+                }
+                carry = Math.Min(maximum - 1, length);
+                if (carry > 0) { Buffer.BlockCopy(buffer, length - carry, buffer, 0, carry); }
+            }
+        }
+        return false;
+    }
 }
 '@
+}
+
+function Get-PortableFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() }
+    finally {
+        $stream.Dispose()
+        $sha256.Dispose()
+    }
 }
 
 function Assert-PortableWorkPath {
@@ -317,7 +384,8 @@ if ($null -ne $config.PSObject.Properties['submodules']) {
 $excluded = @(".git", ".venv", "runtime", "data", "artifacts", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
 $recursiveExcluded = @(".git", ".venv", "artifacts", "cache", ".cache", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
 $excludedFiles = @(".env", ".env.local")
-$rootEntries = @("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Build-Package.ps1", "Start-WebUI.cmd", "使用说明-先看这里.txt")
+$GuideFileName = [string]::Concat([char]0x4F7F, [char]0x7528, [char]0x8BF4, [char]0x660E, "-", [char]0x5148, [char]0x770B, [char]0x8FD9, [char]0x91CC, ".txt")
+$rootEntries = @("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Build-Package.ps1", "Start-WebUI.cmd", $GuideFileName)
 $stageApp = Join-Path $stage "app"
 $safeWindowsPathBudget = 240
 
@@ -426,6 +494,95 @@ function Get-CanonicalTextSha256 {
     finally { $hasher.Dispose() }
 }
 
+function Remove-WorkerFullRuntimeBytecode {
+    param([Parameter(Mandatory = $true)][string]$PackageRoot)
+    $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot "runtime\live"))
+    foreach ($directory in @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force | Where-Object { $_.Name -eq "__pycache__" } | Sort-Object FullName -Descending)) {
+        if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Force -Filter "*.pyc")) {
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+        Remove-Item -LiteralPath $file.FullName -Force
+    }
+}
+
+function Assert-WorkerFullRuntimeBoundary {
+    param([Parameter(Mandatory = $true)][string]$PackageRoot)
+    foreach ($entry in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force)) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full package staging contains a reparse point: $($entry.FullName)" }
+        foreach ($segment in @($entry.FullName.Substring($PackageRoot.Length).TrimStart("\", "/") -split '[\\/]')) {
+            if ($segment -eq "__pycache__" -or $segment.EndsWith(".pyc", [StringComparison]::OrdinalIgnoreCase)) { throw "Full package staging contains Python bytecode: $($entry.FullName)" }
+            if ($segment -in @("pyvenv.cfg", "conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*") { throw "Full package staging contains forbidden portable-runtime content: $($entry.FullName)" }
+        }
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File -Force)) {
+        if ([TtsMorePortableDirectoryHandle]::NumberOfLinks($file.FullName) -gt 1) { throw "Full package staging contains a multiply-linked file: $($file.FullName)" }
+    }
+}
+
+function Test-WorkerFullRuntimeOnOtherVolume {
+    param([string]$PackageRoot, [string]$ExpectedPython, [string]$ImportProbe)
+    $sourceVolume = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($PackageRoot))
+    $probeRoot = $null
+    foreach ($drive in @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -and ![string]::Equals([IO.Path]::GetPathRoot($_.Root), $sourceVolume, [StringComparison]::OrdinalIgnoreCase) })) {
+        try {
+            $candidate = Join-Path $drive.Root ("tts-more-worker-runtime-probe-" + [Guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
+            $probeRoot = $candidate
+            break
+        }
+        catch { continue }
+    }
+    if ([string]::IsNullOrWhiteSpace($probeRoot)) { return "not_available" }
+    try {
+        $runtimeCopy = Join-Path $probeRoot "runtime-live"
+        Copy-Item -LiteralPath (Join-Path $PackageRoot "runtime\live") -Destination $runtimeCopy -Recurse
+        $python = Join-Path $runtimeCopy "python.exe"
+        & $python -c "import platform,sys; raise SystemExit(0 if platform.python_version()==sys.argv[1] else 1)" $ExpectedPython
+        if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python version probe failed" }
+        & $python -c $ImportProbe
+        if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python import probe failed" }
+        return "passed"
+    }
+    finally { if (Test-Path -LiteralPath $probeRoot) { Remove-Item -LiteralPath $probeRoot -Recurse -Force } }
+}
+
+function Test-WorkerBinaryContainsMachinePrefix {
+    param([string]$Path, [string[]]$Prefixes)
+    return [TtsMorePortableDirectoryHandle]::ContainsAnyPrefix($Path, $Prefixes)
+}
+
+function Assert-WorkerFullArchiveBoundary {
+    param([Parameter(Mandatory = $true)][string]$ArchivePath)
+    Add-Type -AssemblyName System.IO.Compression
+    $stream = [IO.File]::OpenRead($ArchivePath)
+    try {
+        $archive = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Read, $false)
+        try {
+            foreach ($entry in $archive.Entries) {
+                foreach ($segment in @($entry.FullName -split '[/\\]')) {
+                    if ($segment -eq "__pycache__" -or $segment.EndsWith(".pyc", [StringComparison]::OrdinalIgnoreCase)) { throw "Full package archive contains Python bytecode: $($entry.FullName)" }
+                    if ($segment -in @("pyvenv.cfg", "conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*") { throw "Full package archive contains forbidden portable-runtime content: $($entry.FullName)" }
+                }
+            }
+        }
+        finally { $archive.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+
+$buildPythonOutput = @(& (Join-Path $Bundle "Resolve-PortableBuildPython.ps1") `
+    -PackageRoot $Root `
+    -BuildToolsRoot (Join-Path $Bundle "build-tools") `
+    -BootstrapCondaPath (Join-Path $Bundle "bootstrap-conda.ps1") `
+    -ToolchainLockPath (Join-Path $Bundle "locks\toolchain.lock.json") `
+    -PortableInstallPath (Join-Path $Bundle "portable_install.py"))
+if ($LASTEXITCODE -ne 0 -or $buildPythonOutput.Count -eq 0) { throw "portable build-tools bootstrap failed" }
+$buildPython = [IO.Path]::GetFullPath([string]$buildPythonOutput[-1])
+& $buildPython (Join-Path $Bundle "portable_packages.py") audit-builder-source --root $Root --component ([string]$config.component) --profile $profileName
+if ($LASTEXITCODE -ne 0) { throw "$($config.component) source dirty: copied source audit failed" }
+
 Assert-PortableTreePathBudget
 $createdWorkHandle = $null
 $createdWorkIdentity = $null
@@ -450,15 +607,17 @@ foreach ($entry in Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.N
     }
 }
 foreach ($name in @("Initialize.cmd", "Start.cmd", "Stop.cmd", "Repair.cmd", "Start-WebUI.cmd")) {
-    $payload = (Get-Content -LiteralPath (Join-Path $Root $name) -Raw).Replace("\tts_more\", "\app\tts_more\")
+    $payload = (Get-Content -LiteralPath (Join-Path $Root $name) -Raw).Replace("%~dp0tts_more\", "%~dp0app\tts_more\")
     Set-Content -LiteralPath (Join-Path $stage $name) -Value $payload -Encoding ASCII
 }
-Copy-Item -LiteralPath (Join-Path $Root "使用说明-先看这里.txt") -Destination (Join-Path $stage "使用说明-先看这里.txt") -Force
+Copy-Item -LiteralPath (Join-Path $Root $GuideFileName) -Destination (Join-Path $stage $GuideFileName) -Force
 @'
 throw "This delivered portable package cannot rebuild itself. Use the corresponding source checkout and its Build-Package.ps1."
 '@ | Set-Content -LiteralPath (Join-Path $stage "Build-Package.ps1") -Encoding ASCII
 
 $stagedBundle = Join-Path $stageApp "tts_more"
+$stagedPortablePython = Join-Path $stagedBundle "portable-python.ps1"
+if (!(Test-Path -LiteralPath $stagedPortablePython -PathType Leaf)) { throw "portable-python.ps1 is missing from worker package staging" }
 $stagedConfigPath = Join-Path $stagedBundle "component.json"
 $stagedModelLockPath = Join-Path $stagedBundle "locks\models.lock.json"
 $stagedConfig = Get-Content -LiteralPath $stagedConfigPath -Raw | ConvertFrom-Json
@@ -471,6 +630,10 @@ $stagedModelLock | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $stagedMo
 
 $stagedIntegrationPath = Join-Path $stagedBundle "integration.manifest.json"
 $stagedIntegration = Get-Content -LiteralPath $stagedIntegrationPath -Raw | ConvertFrom-Json
+$helperManifestEntry = $stagedIntegration.files.PSObject.Properties["tts_more/portable-python.ps1"]
+if (!$helperManifestEntry -or ![string]::Equals([string]$helperManifestEntry.Value, (Get-CanonicalTextSha256 -Path $stagedPortablePython), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "portable-python.ps1 is missing from exact integration manifest coverage"
+}
 $stagedFiles = [ordered]@{}
 foreach ($entry in $stagedIntegration.files.PSObject.Properties) {
     $relative = [string]$entry.Name
@@ -520,7 +683,7 @@ if ($Profile -eq "Bootstrap") {
 }
 
 $integrationManifest = Get-Content -LiteralPath (Join-Path $stagedBundle "integration.manifest.json") -Raw | ConvertFrom-Json
-$integrationSha = (Get-FileHash -LiteralPath (Join-Path $stagedBundle "integration.manifest.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+$integrationSha = Get-PortableFileSha256 -Path (Join-Path $stagedBundle "integration.manifest.json")
 $deviceProfiles = if ($Device -eq "Auto") { @("auto", "cu128", "cu126", "cpu") } else { @($Device.ToLowerInvariant()) }
 $capabilities = switch ([string]$config.component) {
     "gpt-sovits" { @("tts", "trained_weights_voice", "reference_audio_voice", "artifact-transfer") }
@@ -546,14 +709,25 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage "package\tts-more-package.json") -Encoding UTF8
 @{ schema_version = 1; component = $config.component; integration_license = "Apache-2.0"; upstream_license = "app/LICENSE"; model_license = $modelLock.license; model_repository = $modelLock.upstream_repository; model_snapshot_revision = $modelLock.snapshot_revision } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json") -Encoding UTF8
 
-$buildPython = if ($env:TTS_MORE_BUILD_PYTHON) { $env:TTS_MORE_BUILD_PYTHON } elseif (Test-Path -LiteralPath (Join-Path $Root "runtime\live\python.exe")) { Join-Path $Root "runtime\live\python.exe" } elseif (Test-Path -LiteralPath (Join-Path $Root ".venv\Scripts\python.exe")) { Join-Path $Root ".venv\Scripts\python.exe" } else {
-    $conda = (& (Join-Path $Bundle "bootstrap-conda.ps1") -CacheRoot "data/cache/portable/conda" -LockPath "tts_more/locks/toolchain.lock.json" -PassThru | Select-Object -Last 1)
-    Join-Path (Split-Path -Parent (Split-Path -Parent $conda)) "python.exe"
-}
 $resolvedProfile = ""
+$runtimeCrossVolumeProbe = "not_run"
+$isolatedUvCache = ""
 if ($Profile -eq "Full") {
-    & (Join-Path $stagedBundle "Initialize.ps1") -Device $Device -PackageRoot $stage
-    if ($LASTEXITCODE -ne 0) { throw "full package initialization failed" }
+    $previousUvCache = $env:UV_CACHE_DIR
+    $isolatedUvCache = Join-Path $work "uv-cache"
+    try {
+        $env:UV_CACHE_DIR = $isolatedUvCache
+        & (Join-Path $stagedBundle "Initialize.ps1") -Device $Device -PackageRoot $stage
+        if ($LASTEXITCODE -ne 0) { throw "full package initialization failed" }
+    }
+    finally {
+        $env:UV_CACHE_DIR = $previousUvCache
+        if (Test-Path -LiteralPath $isolatedUvCache) { Remove-Item -LiteralPath $isolatedUvCache -Recurse -Force }
+    }
+    Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
+    Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
+    $runtimeLockForProbe = Get-Content -LiteralPath (Join-Path $stagedBundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
+    $runtimeCrossVolumeProbe = Test-WorkerFullRuntimeOnOtherVolume -PackageRoot $stage -ExpectedPython ([string]$runtimeLockForProbe.python_version) -ImportProbe ([string]$runtimeLockForProbe.import_probe)
     $statePath = Join-Path $stage "data\local\install-state.json"
     $profileOutput = @(& $buildPython (Join-Path $Bundle "portable_packages.py") resolve-full-profile --state $statePath --component ([string]$config.component) --build-id ([string]$manifest.build_id) --requested-profile $Device.ToLowerInvariant() 2>&1)
     $profileExit = $LASTEXITCODE
@@ -583,13 +757,18 @@ if ($Profile -eq "Bootstrap") {
     })
     if ($forbiddenLockedAssets.Count -gt 0) { throw "bootstrap audit found locked model asset: $($forbiddenLockedAssets.FullName -join ', ')" }
 }
-$machinePathLeak = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.Length -lt 5MB } | Select-String -SimpleMatch -Pattern $Root -ErrorAction SilentlyContinue)
+$machinePrefixes = @($Root, $work, $stage, $workBase, $isolatedUvCache, [IO.Path]::GetTempPath(), $env:TEMP, $env:TMP, $env:USERPROFILE, "$($env:HOMEDRIVE)$($env:HOMEPATH)") | Where-Object { ![string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Length -ge 3 } | Select-Object -Unique
+$runtimeLiveRoot = [IO.Path]::GetFullPath((Join-Path $stage "runtime\live"))
+$machinePathLeak = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { !$_.FullName.StartsWith($runtimeLiveRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and $_.Length -lt 5MB } | Select-String -SimpleMatch -Pattern $machinePrefixes -ErrorAction SilentlyContinue)
+$runtimePrefixLeak = @()
+if ($Profile -eq "Full") { $runtimePrefixLeak = @(Get-ChildItem -LiteralPath $runtimeLiveRoot -Recurse -File -Force | Where-Object { Test-WorkerBinaryContainsMachinePrefix -Path $_.FullName -Prefixes $machinePrefixes }) }
 if ($machinePathLeak.Count -gt 0) { throw "package contains a build-machine absolute path: $($machinePathLeak[0].Path)" }
+if ($runtimePrefixLeak.Count -gt 0) { throw "machine-prefix audit found build-machine path data in worker runtime: $($runtimePrefixLeak[0].FullName)" }
 
 $sumPath = Join-Path $stage "SHA256SUMS.txt"
 @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.FullName -ne $sumPath } | Sort-Object FullName | ForEach-Object {
     $relative = $_.FullName.Substring($stage.Length).TrimStart("\", "/").Replace("\", "/")
-    "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+    "$(Get-PortableFileSha256 -Path $_.FullName)  $relative"
 }) | Set-Content -LiteralPath $sumPath -Encoding UTF8
 
 & $buildPython (Join-Path $stagedBundle "portable_packages.py") validate-manifest --manifest (Join-Path $stage "package\tts-more-package.json") --package-root $stage
@@ -601,13 +780,14 @@ New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $zip = Join-Path $OutputRoot "$packageName.zip"
 & $buildPython (Join-Path $stagedBundle "portable_packages.py") create-zip --package-root $stage --output $zip --archive-root $packageName
 if ($LASTEXITCODE -ne 0) { throw "ZIP64 package creation failed" }
+if ($Profile -eq "Full") { Assert-WorkerFullArchiveBoundary -ArchivePath $zip }
 $auditPassed = $false
 if ($Profile -eq "Bootstrap") {
     & $buildPython (Join-Path $stagedBundle "portable_packages.py") audit-release --zip $zip
     if ($LASTEXITCODE -ne 0) { throw "GitHub bootstrap release audit failed" }
     $auditPassed = $true
 }
-$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$hash = Get-PortableFileSha256 -Path $zip
 "$hash  $([IO.Path]::GetFileName($zip))" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
 $provenance = [ordered]@{ component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; integration_revision=$integrationManifest.source_revision; model_snapshot=$modelLock.snapshot_revision; sha256=$hash }
 if ($Profile -eq "Full") { $provenance.resolved_profile = $resolvedProfile }
@@ -628,7 +808,12 @@ if ($Profile -eq "Full") { $licenseDelivery.resolved_profile = $resolvedProfile 
 $licenseSidecar | Add-Member -NotePropertyName delivery -NotePropertyValue $licenseDelivery -Force
 $licenseSidecar | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath "$zip.licenses.json" -Encoding UTF8
 $acceptance = [ordered]@{ schema_version=1; component=$config.component; version=$Version; profile=$profileName; source_revision=$revision; sha256=$hash; manifest_valid=$true; schema_audit=$true; path_audit=$true; sha256_manifest_audit=$true; bootstrap_audit=$auditPassed; machine_path_scan=$true; generated_at=[DateTime]::UtcNow.ToString("o") }
-if ($Profile -eq "Full") { $acceptance.resolved_profile = $resolvedProfile }
+if ($Profile -eq "Full") {
+    $acceptance.resolved_profile = $resolvedProfile
+    $acceptance.runtime_reparse_scan = $true
+    $acceptance.runtime_hardlink_scan = $true
+    $acceptance.runtime_cross_volume_probe = $runtimeCrossVolumeProbe
+}
 $acceptance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$zip.acceptance.json" -Encoding UTF8
 Write-Host "Created $Profile package: $zip"
 }

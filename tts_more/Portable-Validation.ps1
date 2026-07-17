@@ -1,5 +1,16 @@
 Set-StrictMode -Version Latest
 
+function Get-PortableFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() }
+    finally {
+        $stream.Dispose()
+        $sha256.Dispose()
+    }
+}
+
 function Assert-PortableJsonObject {
     param([object]$Value, [string]$Label)
     if ($null -eq $Value -or $Value.GetType().FullName -ne "System.Management.Automation.PSCustomObject") { throw "$Label must be an object" }
@@ -54,7 +65,7 @@ function Assert-PortableV2Manifest {
 
     Assert-PortableJsonProperties -Value $Manifest.runtime -Label "runtime" -Required @("python_version", "device_profiles", "lock", "state_path")
     foreach ($name in @("python_version", "lock", "state_path")) { Assert-PortableJsonString -Value $Manifest.runtime.$name -Label "runtime.$name" }
-    if ([string]$Manifest.runtime.python_version -notin @("3.10", "3.11")) { throw "runtime.python_version is unsupported" }
+    if ([string]$Manifest.runtime.python_version -notin @("3.10", "3.10.11", "3.11", "3.11.9")) { throw "runtime.python_version is unsupported" }
     Assert-PortableJsonStringArray -Value $Manifest.runtime.device_profiles -Label "runtime.device_profiles" -Allowed @("auto", "cu128", "cu126", "cpu")
     Assert-PortableJsonProperties -Value $Manifest.models -Label "models" -Required @("lock", "required")
     Assert-PortableJsonString -Value $Manifest.models.lock -Label "models.lock"
@@ -200,7 +211,12 @@ function Assert-PortableRuntime {
     if (!(Test-Path -LiteralPath $resolvedPython -PathType Leaf)) { throw "package runtime is missing" }
     [void](Assert-PortablePackageRoot -Root $resolvedRoot)
     [void](Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $relative -Label "package runtime" -MustExist)
-    $versionOutput = @(& $resolvedPython -c "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>&1)
+    $versionProbe = if ($ExpectedVersion -match '^\d+\.\d+\.\d+$') {
+        "import platform;print(platform.python_version())"
+    } else {
+        "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
+    }
+    $versionOutput = @(& $resolvedPython -c $versionProbe 2>&1)
     if ($LASTEXITCODE -ne 0 -or ($versionOutput -join "").Trim() -ne $ExpectedVersion) {
         throw "package runtime Python version must be $ExpectedVersion"
     }
@@ -262,7 +278,7 @@ function Test-PortableLockedAssets {
             if (!(Test-Path -LiteralPath $target -PathType Leaf)) { return $false }
             if ($null -ne $asset.PSObject.Properties["size_bytes"] -and [int64]$asset.size_bytes -ne (Get-Item -LiteralPath $target).Length) { return $false }
             if ($null -ne $asset.PSObject.Properties["sha256"] -and ![string]::IsNullOrWhiteSpace([string]$asset.sha256)) {
-                if (![string]::Equals((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash, [string]$asset.sha256, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+                if (![string]::Equals((Get-PortableFileSha256 -Path $target), [string]$asset.sha256, [StringComparison]::OrdinalIgnoreCase)) { return $false }
             }
         }
         return $true
@@ -282,7 +298,7 @@ function Assert-PortableSha256Manifest {
         if ($line -notmatch '^([0-9a-fA-F]{64})\s{2}(.+)$') { throw "SHA256SUMS contains an invalid record" }
         $relative = $Matches[2].Replace('/', '\')
         $path = Resolve-PortablePackagePath -Root $Root -RelativePath $relative -Label "SHA256SUMS entry" -MustExist
-        $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        $actual = Get-PortableFileSha256 -Path $path
         if (![string]::Equals($actual, $Matches[1], [StringComparison]::OrdinalIgnoreCase)) { throw "SHA256SUMS hash mismatch: $relative" }
         $covered[[IO.Path]::GetFullPath($path).ToLowerInvariant()] = $true
     }
@@ -356,13 +372,13 @@ function Test-PortableInstallStateComplete {
             if ($ValidateAssets -and (!$runtimePayload.PSObject.Properties["component"] -or [string]$runtimePayload.component -ne $Component)) { return $false }
             if ($runtimePayload.PSObject.Properties["python_version"] -and [string]$runtimePayload.python_version -ne $ExpectedPython) { return $false }
             if ($runtimePayload.PSObject.Properties["profiles"] -and !$runtimePayload.profiles.PSObject.Properties[[string]$state.profile]) { return $false }
-            $runtimeHash = (Get-FileHash -LiteralPath $RuntimeLock -Algorithm SHA256).Hash.ToLowerInvariant()
+            $runtimeHash = Get-PortableFileSha256 -Path $RuntimeLock
             if ([string]$state.runtime_lock_sha256 -ne $runtimeHash) { return $false }
         }
         if (Test-Path -LiteralPath $ModelLock -PathType Leaf) {
             $modelPayload = Get-Content -LiteralPath $ModelLock -Raw | ConvertFrom-Json
             if ($ValidateAssets -and (!$modelPayload.PSObject.Properties["component"] -or [string]$modelPayload.component -ne $Component)) { return $false }
-            $modelHash = (Get-FileHash -LiteralPath $ModelLock -Algorithm SHA256).Hash.ToLowerInvariant()
+            $modelHash = Get-PortableFileSha256 -Path $ModelLock
             if ([string]$state.model_lock_sha256 -ne $modelHash) { return $false }
         }
         $python = Join-Path $Root "runtime\live\python.exe"

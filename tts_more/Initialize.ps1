@@ -23,8 +23,6 @@ $config = $paths.Config
 $env:PYTHONPATH = $SourceRoot
 $runtimeLockPath = Join-Path $Bundle "locks\runtime.lock.json"
 $modelLockPath = Join-Path $Bundle "locks\models.lock.json"
-$toolchainLockPath = Join-Path $Bundle "locks\toolchain.lock.json"
-$ToolchainLockRelative = $toolchainLockPath.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
 $runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
 $modelLock = Get-Content -LiteralPath $modelLockPath -Raw | ConvertFrom-Json
 if (!$modelLock.complete) {
@@ -96,6 +94,38 @@ function Assert-PortableNotCancelled {
     }
 }
 
+function Publish-PortableRuntimeTransaction {
+    param(
+        [Parameter(Mandatory = $true)][string]$Staging,
+        [Parameter(Mandatory = $true)][string]$Live,
+        [Parameter(Mandatory = $true)][string]$Backup,
+        [Parameter(Mandatory = $true)][scriptblock]$CommitState
+    )
+    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Recurse -Force }
+    $previousMoved = $false
+    try {
+        if (Test-Path -LiteralPath $Live) {
+            Move-Item -LiteralPath $Live -Destination $Backup
+            $previousMoved = $true
+        }
+        Move-Item -LiteralPath $Staging -Destination $Live
+        & $CommitState
+    }
+    catch {
+        $failure = $_
+        try {
+            if (Test-Path -LiteralPath $Live) { Remove-Item -LiteralPath $Live -Recurse -Force }
+            if ($previousMoved -and (Test-Path -LiteralPath $Backup)) { Move-Item -LiteralPath $Backup -Destination $Live }
+        }
+        catch { Write-Warning "runtime rollback encountered a secondary failure: $($_.Exception.Message)" }
+        throw $failure
+    }
+    if ($previousMoved -and (Test-Path -LiteralPath $Backup)) {
+        try { Remove-Item -LiteralPath $Backup -Recurse -Force }
+        catch { Write-Warning "committed runtime is valid, but previous runtime cleanup failed: $($_.Exception.Message)" }
+    }
+}
+
 Assert-PortableNotCancelled
 if ($Root.Length -gt 180) { throw "package path is too long for reliable Windows model tooling: $Root" }
 $requiredSpace = [int64]$runtimeLock.required_free_bytes + [int64]$modelLock.required_free_bytes
@@ -111,8 +141,8 @@ if ((Test-PortableLockedAssets -Root $Root -ModelLock $modelLockPath) -and (Test
     $existingState = if (Test-Path -LiteralPath $state -PathType Leaf) { try { Get-Content -LiteralPath $state -Raw | ConvertFrom-Json } catch { $null } } else { $null }
     $requestedProfile = if ($existingState -and ![string]::IsNullOrWhiteSpace([string]$existingState.profile)) { [string]$existingState.profile } else { "" }
     $selectedProfile = Resolve-PortableSupportedProfile -RuntimeLockPayload $runtimeLock -RequestedProfile $requestedProfile
-    $runtimeSha = (Get-FileHash -LiteralPath $runtimeLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $modelSha = (Get-FileHash -LiteralPath $modelLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $runtimeSha = Get-PortableFileSha256 -Path $runtimeLockPath
+    $modelSha = Get-PortableFileSha256 -Path $modelLockPath
     & (Join-Path $live "python.exe") (Join-Path $Bundle "portable_install.py") write-state --path $state --component ([string]$config.component) --build-id $buildId --profile $selectedProfile --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
     if ($LASTEXITCODE -ne 0) { throw "failed to repair stale install-state.json" }
     if (!(Test-PortableInstallStateComplete -Root $Root -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets)) { throw "repaired install-state.json failed complete validation" }
@@ -121,17 +151,29 @@ if ((Test-PortableLockedAssets -Root $Root -ModelLock $modelLockPath) -and (Test
 }
 if ($Repair) { Write-Host "repairing only missing or invalid locked assets; user data is preserved" }
 
-$bootstrap = Join-Path $Bundle "bootstrap-conda.ps1"
-$Conda = (& $bootstrap -CacheRoot "data/cache/portable/conda" -LockPath $ToolchainLockRelative -PackageRoot $Root -OperationRoot $OperationRoot -CancelFile $CancelFile -PassThru | Select-Object -Last 1)
-if ($LASTEXITCODE -eq 20) { exit 20 }
-$CondaRoot = Split-Path -Parent (Split-Path -Parent $Conda)
-$BootstrapPython = Join-Path $CondaRoot "python.exe"
-if (!(Test-Path -LiteralPath $BootstrapPython)) { throw "private bootstrap Python is missing" }
+. (Join-Path $Bundle "portable-python.ps1")
+if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+try {
+    $PortableRuntime = Install-PortablePythonRuntime `
+        -PackageRoot $Root `
+        -RuntimeLock $runtimeLockPath `
+        -Destination $staging `
+        -OperationRoot $OperationRoot `
+        -CancelFile $CancelFile
+}
+catch [System.OperationCanceledException] {
+    exit 20
+}
+Assert-PortableNotCancelled
+
+& $PortableRuntime.Python -c "import platform,sys; raise SystemExit(0 if platform.python_version() == sys.argv[1] else 1)" $expectedPython
+if ($LASTEXITCODE -ne 0) { throw "embedded Python patch version does not match runtime lock: $expectedPython" }
+
 $controllers = Join-Path $Root "data\cache\portable\video-controllers.json"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $controllers) | Out-Null
 $videoControllers = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{name=[string]$_.Name;driver_version=[string]$_.DriverVersion} })
 ConvertTo-Json -InputObject $videoControllers | Set-Content -LiteralPath $controllers -Encoding UTF8
-$selected = (& $BootstrapPython (Join-Path $Bundle "portable_install.py") select-device --runtime-lock $runtimeLockPath --requested $Device.ToLowerInvariant() --controllers $controllers).Trim()
+$selected = (& $PortableRuntime.Python (Join-Path $Bundle "portable_install.py") select-device --runtime-lock $runtimeLockPath --requested $Device.ToLowerInvariant() --controllers $controllers).Trim()
 if ($LASTEXITCODE -ne 0) { throw "device profile selection failed" }
 $profile = $runtimeLock.profiles.$selected
 
@@ -141,7 +183,7 @@ foreach ($asset in $payloads) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $assetLock) | Out-Null
     $asset | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $assetLock -Encoding UTF8
     $archivePath = Join-Path $Root ([string]$asset.target)
-    & $BootstrapPython (Join-Path $Bundle "portable_install.py") ensure-asset --asset $assetLock --path $archivePath @DownloadArguments
+    & $PortableRuntime.Python (Join-Path $Bundle "portable_install.py") ensure-asset --asset $assetLock --path $archivePath @DownloadArguments
     if ($LASTEXITCODE -eq 20) { exit 20 }
     if ($LASTEXITCODE -ne 0) { throw "locked runtime asset failed: $($asset.id)" }
     if ($asset.extract_to) {
@@ -164,7 +206,7 @@ foreach ($asset in @($modelLock.assets)) {
     $assetLock = Join-Path $Root "data\cache\portable\locks\$($asset.id).json"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $assetLock) | Out-Null
     $asset | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $assetLock -Encoding UTF8
-    & $BootstrapPython (Join-Path $Bundle "portable_install.py") ensure-asset --asset $assetLock --path (Join-Path $Root ([string]$asset.target)) @DownloadArguments
+    & $PortableRuntime.Python (Join-Path $Bundle "portable_install.py") ensure-asset --asset $assetLock --path (Join-Path $Root ([string]$asset.target)) @DownloadArguments
     if ($LASTEXITCODE -eq 20) { exit 20 }
     if ($LASTEXITCODE -ne 0) { throw "locked model asset failed: $($asset.id)" }
 }
@@ -174,51 +216,37 @@ foreach ($requiredModelPath in @($modelLock.required_paths)) {
     }
 }
 
-if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
-& $Conda create --yes --prefix $staging "python=$($config.python)" pip
-if ($LASTEXITCODE -ne 0) { throw "temporary package runtime creation failed" }
-$StagePython = Join-Path $staging "python.exe"
-$uv = $runtimeLock.assets.uv
-$uvLock = Join-Path $Root "data\cache\portable\locks\uv.json"
-$uvWheel = Join-Path $Root "data\cache\portable\assets\$($uv.id).whl"
-$uv | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $uvLock -Encoding UTF8
-& $BootstrapPython (Join-Path $Bundle "portable_install.py") ensure-asset --asset $uvLock --path $uvWheel @DownloadArguments
-if ($LASTEXITCODE -eq 20) { exit 20 }
-if ($LASTEXITCODE -ne 0) { throw "locked uv download failed" }
-& $StagePython -m pip install --no-deps $uvWheel
-$UvExe = Join-Path $staging "Scripts\uv.exe"
 if ($runtimeLock.dependency_mode -in @("uv-project", "uv-check-requirements")) {
-    & $UvExe lock --check --project $SourceRoot
+    & $PortableRuntime.Uv lock --check --project $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw "upstream uv.lock drift detected" }
 }
 if ($runtimeLock.dependency_mode -eq "uv-project") {
     $requirements = Join-Path $staging "frozen-requirements.txt"
-    & $UvExe export --frozen --no-dev --no-emit-project --project $SourceRoot --output-file $requirements
-    & $UvExe pip install --python $StagePython --requirement $requirements
+    & $PortableRuntime.Uv export --frozen --no-dev --no-emit-project --project $SourceRoot --output-file $requirements
+    if ($LASTEXITCODE -ne 0) { throw "failed to export frozen upstream dependencies" }
+    & $PortableRuntime.Uv pip install --python $PortableRuntime.Python --target $PortableRuntime.SitePackages --link-mode copy --requirement $requirements
 } else {
-    $installArguments = @("pip", "install", "--python", $StagePython, "--requirement", (Join-Path $Bundle "locks\$([string]$profile.dependency_lock)"))
+    $installArguments = @("pip", "install", "--python", $PortableRuntime.Python, "--target", $PortableRuntime.SitePackages, "--link-mode", "copy", "--requirement", (Join-Path $Bundle "locks\$([string]$profile.dependency_lock)"))
     $buildConstraint = Join-Path $Bundle "locks\build-constraints.lock.txt"
     if (Test-Path -LiteralPath $buildConstraint) { $installArguments += @("--build-constraint", $buildConstraint) }
-    & $UvExe @installArguments
+    & $PortableRuntime.Uv @installArguments
 }
 if ($LASTEXITCODE -ne 0) { throw "frozen dependency synchronization failed" }
-& $StagePython -m pip check
-if ($LASTEXITCODE -ne 0) { throw "pip check failed" }
-& $StagePython -c ([string]$config.import_probe)
+& $PortableRuntime.Uv pip check --python $PortableRuntime.Python
+if ($LASTEXITCODE -ne 0) { throw "uv pip check failed" }
+& $PortableRuntime.Python -c $importProbe
 if ($LASTEXITCODE -ne 0) { throw "core import/ONNX probe failed" }
 if ($selected -ne "cpu") {
     $expectedCuda = if ($selected -eq "cu128") { "12.8" } else { "12.6" }
-    & $StagePython -c "import torch; assert torch.cuda.is_available(); assert torch.version.cuda.startswith('$expectedCuda'); print(torch.cuda.get_device_name(0))"
+    & $PortableRuntime.Python -c "import torch; assert torch.cuda.is_available(); assert torch.version.cuda.startswith('$expectedCuda'); print(torch.cuda.get_device_name(0))"
     if ($LASTEXITCODE -ne 0) { throw "explicit $selected package Torch/CUDA probe failed; CPU fallback is prohibited" }
 }
 
+$runtimeSha = Get-PortableFileSha256 -Path $runtimeLockPath
+$modelSha = Get-PortableFileSha256 -Path $modelLockPath
 $backup = Join-Path $Root "runtime\previous"
-if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-if (Test-Path -LiteralPath $live) { Move-Item -LiteralPath $live -Destination $backup }
-Move-Item -LiteralPath $staging -Destination $live
-if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-$runtimeSha = (Get-FileHash -LiteralPath $runtimeLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$modelSha = (Get-FileHash -LiteralPath $modelLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
-& (Join-Path $live "python.exe") (Join-Path $Bundle "portable_install.py") write-state --path $state --component ([string]$config.component) --build-id $buildId --profile $selected --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
-if ($LASTEXITCODE -ne 0) { throw "install state commit failed" }
+Publish-PortableRuntimeTransaction -Staging $staging -Live $live -Backup $backup -CommitState {
+    & (Join-Path $live "python.exe") (Join-Path $Bundle "portable_install.py") write-state --path $state --component ([string]$config.component) --build-id $buildId --profile $selected --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
+    if ($LASTEXITCODE -ne 0) { throw "install state commit failed" }
+}
 Write-Host "$($config.component) initialization completed for $selected"

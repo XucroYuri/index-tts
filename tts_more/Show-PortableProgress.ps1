@@ -106,7 +106,7 @@ try {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = "TTS More 便携包进度"
+    $form.Text = "TTS More portable package progress"
     $form.StartPosition = "CenterScreen"
     $form.Size = New-Object Drawing.Size(620, 310)
     $form.MinimumSize = New-Object Drawing.Size(520, 260)
@@ -115,7 +115,7 @@ try {
     $phaseLabel.AutoSize = $false
     $phaseLabel.Location = New-Object Drawing.Point(20, 18)
     $phaseLabel.Size = New-Object Drawing.Size(560, 48)
-    $phaseLabel.Text = "正在准备启动…"
+    $phaseLabel.Text = "Preparing startup..."
     $form.Controls.Add($phaseLabel)
 
     $progress = New-Object Windows.Forms.ProgressBar
@@ -133,29 +133,29 @@ try {
     $form.Controls.Add($details)
 
     $minimize = New-Object Windows.Forms.Button
-    $minimize.Text = "最小化"
+    $minimize.Text = "Minimize"
     $minimize.Location = New-Object Drawing.Point(20, 214)
     $minimize.Add_Click({ $form.WindowState = "Minimized" })
     $form.Controls.Add($minimize)
 
     $background = New-Object Windows.Forms.Button
-    $background.Text = "后台运行"
+    $background.Text = "Run in background"
     $background.Location = New-Object Drawing.Point(125, 214)
     $background.Add_Click({ $form.WindowState = "Minimized" })
     $form.Controls.Add($background)
 
     $cancel = New-Object Windows.Forms.Button
-    $cancel.Text = "取消"
+    $cancel.Text = "Cancel"
     $cancel.Location = New-Object Drawing.Point(230, 214)
     $cancel.Add_Click({
         Request-PortableCancellation
         $cancel.Enabled = $false
-        $phaseLabel.Text = "已请求安全取消；正在保留已下载数据…"
+        $phaseLabel.Text = "Safe cancellation requested; preserving downloaded data..."
     })
     $form.Controls.Add($cancel)
 
     $close = New-Object Windows.Forms.Button
-    $close.Text = "关闭"
+    $close.Text = "Close"
     $close.Location = New-Object Drawing.Point(480, 214)
     $close.Enabled = $false
     $close.Add_Click({ $form.Close() })
@@ -182,11 +182,11 @@ try {
             $cancel.Enabled = $false
             $close.Enabled = $true
             if ([int]$operation.exit_code -eq 0) {
-                $phaseLabel.Text = if ($Url) { "服务已就绪：$Url" } else { "服务已就绪" }
+                $phaseLabel.Text = if ($Url) { "Service ready: $Url" } else { "Service ready" }
                 $progress.Style = "Continuous"
                 $progress.Value = 100
             } else {
-                $phaseLabel.Text = "启动未完成，请查看错误说明后重试。"
+                $phaseLabel.Text = "Startup did not complete. Check the error details and retry."
             }
         }
     })

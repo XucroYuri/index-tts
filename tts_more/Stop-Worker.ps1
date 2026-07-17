@@ -54,7 +54,7 @@ $runtimeLockRelative = (Join-Path $Bundle "locks\runtime.lock.json").Substring($
 $runtimeLockPath = Resolve-PortablePackagePath -Root $Root -RelativePath $runtimeLockRelative -Label "runtime lock" -MustExist
 $runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
 $expectedPython = [string]$runtimeLock.python_version
-if ($expectedPython -notin @("3.10", "3.11")) { throw "worker runtime lock has an unsupported Python version" }
+if ($expectedPython -notin @("3.10", "3.10.11", "3.11", "3.11.9")) { throw "worker runtime lock has an unsupported Python version" }
 $Python = Join-Path $Root "runtime\live\python.exe"
 [void](Assert-PortableRuntime -Root $Root -PythonPath $Python -ExpectedVersion $expectedPython -ImportProbe "")
 $launcherRelative = (Join-Path $Bundle "portable_launcher.py").Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')

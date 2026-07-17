@@ -3,7 +3,7 @@
   "component": "indextts",
   "module": "tts_more_worker.indextts:app",
   "port": 9881,
-  "python": "3.11",
+  "python": "3.11.9",
   "upstream_repository": "https://github.com/XucroYuri/index-tts.git",
   "branch": "main",
   "worker_module": "tts_more_worker.indextts:app",

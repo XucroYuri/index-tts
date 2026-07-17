@@ -5,7 +5,7 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator
 from uuid import UUID
@@ -129,7 +129,7 @@ def _canonical_operation_id(operation_id: str) -> str:
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 @contextmanager

@@ -537,11 +537,9 @@ def audit_release_zip(path: Path) -> dict[str, object]:
             entry_roots: set[str] = set()
             canonical_entry_roots: set[str] = set()
             for _entry, name in zip(entries, raw_names, strict=True):
-                if "\\" in name:
-                    raise ValueError("release ZIP top-level package directory must use forward slashes")
                 canonical = _canonical_zip_entry(name)
                 raw_parts = name.split("/")
-                if len(raw_parts) < 2:
+                if len(raw_parts) < 2 or "\\" in raw_parts[0]:
                     raise ValueError("release ZIP must contain files under one top-level package directory")
                 raw_root = raw_parts[0]
                 if (
@@ -915,6 +913,23 @@ def _controller_builder_includes(relative: str) -> bool:
     )
 
 
+def _controller_build_input(relative: str) -> bool:
+    relative = relative.replace("\\", "/")
+    return (
+        relative.startswith(("frontend/src/", "integrations/build_tools/"))
+        or relative in {
+            "frontend/index.html",
+            "frontend/package.json",
+            "frontend/pnpm-lock.yaml",
+            "frontend/pnpm-workspace.yaml",
+            "frontend/tsconfig.json",
+            "frontend/vite.config.ts",
+            "Build-Package.ps1",
+            "scripts/Resolve-PortableBuildPython.ps1",
+        }
+    )
+
+
 def _worker_builder_excludes(relative: str, profile: str) -> bool:
     parts = relative.replace("\\", "/").rstrip("/").split("/")
     root_excluded = {
@@ -992,6 +1007,19 @@ def _untracked_repository_entries(root: Path) -> list[str]:
     return [entry for entry in output.split("\0") if entry]
 
 
+def _modified_repository_entries(root: Path) -> list[str]:
+    output = _git_output(
+        root,
+        "diff",
+        "--no-ext-diff",
+        "--name-only",
+        "-z",
+        "HEAD",
+        "--",
+    )
+    return [entry for entry in output.split("\0") if entry]
+
+
 def _submodule_paths(root: Path) -> list[str]:
     output = _git_output(
         root,
@@ -1011,7 +1039,7 @@ def _submodule_paths(root: Path) -> list[str]:
 
 
 def audit_builder_source(root: Path, *, component: str, profile: str) -> dict[str, object]:
-    """Audit ignored and untracked files using the active package builder's copy rules."""
+    """Audit revision drift using the active package builder's copy rules."""
     errors: list[str] = []
     root = root.resolve(strict=True)
     normalized_profile = profile.casefold()
@@ -1019,24 +1047,45 @@ def audit_builder_source(root: Path, *, component: str, profile: str) -> dict[st
         return {"valid": False, "errors": ["builder source audit identity is invalid"]}
     locked = _locked_model_assets(root, component)
 
+    def inspect_entry(repository: Path, prefix: str, entry: str, *, tracked: bool) -> None:
+        combined = f"{prefix}/{entry}".strip("/").replace("\\", "/")
+        if component == "tts-more":
+            # frontend/dist is a generated release boundary. CI/build orchestration
+            # produces it from the revision-bound inputs below; it is intentionally
+            # ignored rather than committed as generated source.
+            if not tracked and combined.startswith("frontend/dist/"):
+                return
+            if _controller_builder_includes(combined) or _controller_build_input(combined):
+                if tracked:
+                    errors.append(f"copied tracked source differs from revision: {combined}")
+                else:
+                    errors.append(f"copied untracked source is not revision-bound: {combined}")
+            return
+        if _worker_builder_excludes(combined, normalized_profile):
+            return
+        candidate_path = repository / entry.rstrip("/")
+        if candidate_path.is_symlink():
+            return
+        if not _model_candidate(combined):
+            if tracked:
+                errors.append(f"copied tracked source differs from revision: {combined}")
+            else:
+                errors.append(f"copied untracked source is not revision-bound: {combined}")
+            return
+        expected = locked.get(_canonical_relative_path(combined))
+        if (
+            normalized_profile != "full"
+            or expected is None
+            or not candidate_path.is_file()
+            or hashlib.sha256(candidate_path.read_bytes()).hexdigest() != expected
+        ):
+            errors.append(f"unlocked or modified model asset would be embedded: {combined}")
+
     def inspect_repository(repository: Path, prefix: str = "") -> None:
         for entry in _untracked_repository_entries(repository):
-            combined = f"{prefix}/{entry}".strip("/").replace("\\", "/")
-            if component == "tts-more":
-                if _controller_builder_includes(combined):
-                    errors.append(f"copied untracked source is not revision-bound: {combined}")
-                continue
-            if _worker_builder_excludes(combined, normalized_profile):
-                continue
-            candidate_path = repository / entry.rstrip("/")
-            if candidate_path.is_symlink():
-                continue
-            if not _model_candidate(combined):
-                errors.append(f"copied untracked source is not revision-bound: {combined}")
-                continue
-            expected = locked.get(_canonical_relative_path(combined))
-            if expected is None or hashlib.sha256(candidate_path.read_bytes()).hexdigest() != expected:
-                errors.append(f"unlocked or modified model asset would be embedded: {combined}")
+            inspect_entry(repository, prefix, entry, tracked=False)
+        for entry in _modified_repository_entries(repository):
+            inspect_entry(repository, prefix, entry, tracked=True)
         for submodule in _submodule_paths(repository):
             submodule_root = repository / submodule
             if submodule_root.is_dir():

@@ -1,5 +1,22 @@
 Set-StrictMode -Version Latest
 
+function Assert-PortablePackageRootPathBudget {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [ValidateRange(1, 32767)][int]$SafeWindowsPathBudget = 240
+    )
+
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $generatedRuntimePath = Join-Path $resolvedRoot "runtime\staging\Lib\site-packages\transformers\utils\dummy_essentia_and_librosa_and_pretty_midi_and_scipy_and_torch_objects.py"
+    if ($generatedRuntimePath.Length -gt $SafeWindowsPathBudget) {
+        throw "Portable package path is too deep for the bundled runtime (projected path length $($generatedRuntimePath.Length) exceeds $SafeWindowsPathBudget). Move the package to a shorter directory such as D:\TTS\GPT and run again."
+    }
+}
+
 function ConvertTo-PortableWindowsArgumentLine {
     [CmdletBinding()]
     param(
@@ -366,6 +383,25 @@ function Resolve-PortableSupportedProfile {
         }
     }
     throw "runtime lock has no deterministic supported fallback profile"
+}
+
+function Test-PortableRequestedProfileMatchesState {
+    param(
+        [Parameter(Mandatory = $true)][object]$RuntimeLockPayload,
+        [Parameter(Mandatory = $true)][string]$RequestedProfile,
+        [Parameter(Mandatory = $true)][string]$StatePath
+    )
+    $requested = $RequestedProfile.Trim().ToLowerInvariant()
+    if ($requested -eq "auto") { return $true }
+    if (!$RuntimeLockPayload.PSObject.Properties["profiles"]) { throw "runtime lock profiles are missing" }
+    Assert-PortableJsonObject -Value $RuntimeLockPayload.profiles -Label "runtime lock profiles"
+    if (!$RuntimeLockPayload.profiles.PSObject.Properties[$requested]) {
+        throw "requested device profile is not supported by this package: $requested"
+    }
+    if (!(Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $false }
+    try { $existingState = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json }
+    catch { return $false }
+    return [string]::Equals([string]$existingState.profile, $requested, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Test-PortableLockedAssets {

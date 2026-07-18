@@ -20,6 +20,7 @@ $Bundle = $paths.BundleRoot
 $Root = $paths.PackageRoot
 $SourceRoot = $paths.SourceRoot
 $config = $paths.Config
+Assert-PortablePackageRootPathBudget -Root $Root
 $runtimeLockPath = Join-Path $Bundle "locks\runtime.lock.json"
 $modelLockPath = Join-Path $Bundle "locks\models.lock.json"
 $runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
@@ -161,13 +162,14 @@ $manifestPath = Join-Path $Root "package\tts-more-package.json"
 $buildId = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [string](Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).build_id } else { "source-checkout" }
 $expectedPython = if ([string]::IsNullOrWhiteSpace([string]$runtimeLock.python_version)) { [string]$config.python } else { [string]$runtimeLock.python_version }
 $importProbe = if ($runtimeLock.PSObject.Properties["import_probe"] -and ![string]::IsNullOrWhiteSpace([string]$runtimeLock.import_probe)) { [string]$runtimeLock.import_probe } else { [string]$config.import_probe }
+$requestedProfileMatchesState = Test-PortableRequestedProfileMatchesState -RuntimeLockPayload $runtimeLock -RequestedProfile $Device -StatePath $state
 $installStateComplete = Test-PortableInstallStateComplete -Root $Root -SourceRoot $SourceRoot -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets
-if ($installStateComplete) { Write-Host "verified runtime and install state already exist"; exit 0 }
+if ($requestedProfileMatchesState -and $installStateComplete) { Write-Host "verified runtime and install state already exist"; exit 0 }
 $lockedAssetsComplete = Test-PortableLockedAssets -Root $Root -ModelLock $modelLockPath
 $runtimeComplete = if ($lockedAssetsComplete) {
     Test-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath (Join-Path $live "python.exe") -ExpectedVersion $expectedPython -ImportProbe $importProbe
 } else { $false }
-if ($lockedAssetsComplete -and $runtimeComplete) {
+if ($requestedProfileMatchesState -and $lockedAssetsComplete -and $runtimeComplete) {
     Repair-PortableWorkerStaleState -SourceRoot $SourceRoot -Root $Root -StatePath $state -LivePath $live -BundleRoot $Bundle -Component ([string]$config.component) -BuildId $buildId -RuntimeLockPath $runtimeLockPath -ModelLockPath $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -RuntimeLockPayload $runtimeLock
     Write-Host "verified package-private assets and repaired stale install state"
     exit 0
@@ -249,7 +251,7 @@ if ($runtimeLock.dependency_mode -eq "uv-project") {
     if ($LASTEXITCODE -ne 0) { throw "failed to export frozen upstream dependencies" }
     & $PortableRuntime.Uv pip install --python $PortableRuntime.Python --target $PortableRuntime.SitePackages --link-mode copy --requirement $requirements
 } else {
-    $installArguments = @("pip", "install", "--python", $PortableRuntime.Python, "--target", $PortableRuntime.SitePackages, "--link-mode", "copy", "--requirement", (Join-Path $Bundle "locks\$([string]$profile.dependency_lock)"))
+    $installArguments = @("pip", "install", "--python", $PortableRuntime.Python, "--target", $PortableRuntime.SitePackages, "--link-mode", "copy", "--index-strategy", "unsafe-best-match", "--requirement", (Join-Path $Bundle "locks\$([string]$profile.dependency_lock)"))
     $buildConstraint = Join-Path $Bundle "locks\build-constraints.lock.txt"
     if (Test-Path -LiteralPath $buildConstraint) { $installArguments += @("--build-constraint", $buildConstraint) }
     & $PortableRuntime.Uv @installArguments

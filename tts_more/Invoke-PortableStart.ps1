@@ -99,6 +99,9 @@ function Get-PackageContext {
     param([Parameter(Mandatory = $true)][string]$Root)
 
     $resolvedRoot = [IO.Path]::GetFullPath($Root)
+    try { Assert-PortablePackageRootPathBudget -Root $resolvedRoot } catch {
+        Throw-PortableStartError "PACKAGE_PATH_TOO_DEEP" $_.Exception.Message
+    }
     $manifestPath = Join-Path $resolvedRoot "package\tts-more-package.json"
     $manifest = $null
     $isStaged = Test-Path -LiteralPath $manifestPath -PathType Leaf

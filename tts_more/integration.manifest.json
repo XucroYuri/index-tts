@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "f271a87c4b77c52b06e121abfba98192f0acd848",
+  "source_revision": "cd95c5b278b229f60c8500fb4ee69fc64c3cfbbc",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -11,12 +11,12 @@
     "Start.cmd": "1b8034201664752783220b50e2bac8c45e423eb99754a2c61dc9e39f2195d9a2",
     "Stop.cmd": "d44fe7a5bf570ccfb476d9bc197fe1874a57bda47b72e1eda566e8c2c3cef340",
     "tts_more/Build-Package.ps1": "bb35306b09e820b8abbf6cbfeebb170d21c8fb9ebee098a911b1d9af955c87c7",
-    "tts_more/Initialize.ps1": "3fc4e9f33498f8a5015c9d497610e8881303e3cec251439ee761efd4c5b7ff75",
-    "tts_more/Invoke-PortableStart.ps1": "d7e5740568ad1b0bc257e024e4f73148270a409e679047d380ad66b6d39893ff",
+    "tts_more/Initialize.ps1": "214f4c9553c9230caf2c757d87dff194ff4875f475dba00d8158b51f1cc39e10",
+    "tts_more/Invoke-PortableStart.ps1": "e8c14f319b8824b967dc0b0bb61f1d336aacb28f1d4f1b18dd0ec3ee36d0c584",
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",
     "tts_more/NOTICE.integration": "352c42d750d17cb1182944689d7fbab46ebc1e5fd0cedd9102644db1afe6f6f2",
     "tts_more/Portable-Paths.ps1": "7831a05ebdd4cb868ce22bf8ffb2e9fec12ee2abdf7f12cc5fda2996e5259684",
-    "tts_more/Portable-Validation.ps1": "af7900216190f199997d568bb1fefbee4ff0666b51cc63c023891b23476e3ee4",
+    "tts_more/Portable-Validation.ps1": "7f1a7f5b48b9d0a1aae5490484397ce25fbf47fefc6ed7eaf16e5c41c5690efc",
     "tts_more/Repair.ps1": "7035ba4e4592d663adced02beeb6fa551029ca6bacd2acb1a15fde7babec5847",
     "tts_more/Resolve-PortableBuildPython.ps1": "723056106a99a97cb2a2ffe6bcf2e3e01f64aa3f1e1b8471a942ac236c61ef0b",
     "tts_more/Show-PortableProgress.ps1": "da36c0a6fc1bd461a3103ad4ec8b9ab970400920d893b8ac6c84fd7dd1ef4e5f",
@@ -48,9 +48,12 @@
     "tts_more/import_portable_data.py": "9ae8b807be435875cbd734881203ade50e7bef94f5c1d0557fadaf90ea188396",
     "tts_more/locks/component-source.json": "7da0db0adc7a12d98c9c562f45c0d1b98fa4bdb8712781b1bc6a5a6c3a02eb0b",
     "tts_more/locks/models.lock.json": "cd6e0b4e7f0702f114e8b8f8653c5d6f26ff972ab9f91c661834d56ae8f4115c",
-    "tts_more/locks/requirements-cpu.lock.txt": "3b55f0624c1021698a1be1229bfae20b8f3aa6e074609791ee319efe93a6df41",
-    "tts_more/locks/requirements-cu126.lock.txt": "14b75b7df6721c4e51296fac2e7691c8eb7a85308a4fcf96c0f26888a6dc02b4",
-    "tts_more/locks/requirements-cu128.lock.txt": "306b3d86278445425f97a2a53aca0013c4e39429f42b4d3377a8d53779ce4660",
+    "tts_more/locks/profile-cpu.in": "4fee312c53ff15ca7f6846f56a22bab0c996dfc6721fe22f92e4c6f1b765a358",
+    "tts_more/locks/profile-cu126.in": "33da9ae56353db2e3e569dd9d1247afae4f3ea33c29be5aaf64b390915a56a9c",
+    "tts_more/locks/profile-cu128.in": "e4cacb9b85adb6a0437cb02becde074be25aa42866118aefd45cf787d82303ef",
+    "tts_more/locks/requirements-cpu.lock.txt": "245d164002fb4d83b1c3a85d88421ac0575a9f9bd9cbc1b7e679ef763af91e8f",
+    "tts_more/locks/requirements-cu126.lock.txt": "c39378cef21e3af5d8513c6f03514013fd6347d7e4afe25513dbaeb03cd30c42",
+    "tts_more/locks/requirements-cu128.lock.txt": "d2c6835d4404fc8ac9e66ee5ced5ed29d5c4ece573142aa42bbfb08e0085de7b",
     "tts_more/locks/runtime.lock.json": "a0f4b7786bd0e6735aade17016795c1dd2d944bb48d72a8825e285e288241f83",
     "tts_more/locks/toolchain.lock.json": "f05b4f44bbe2ad76a69cb909d2f54f969b9fb27701ba902ba9984cc02c9e8d35",
     "tts_more/portable-python.ps1": "aeb067a4008775f63cf87d8214c02d5c8c3abdc3fdb30502732df9241f10981c",
@@ -67,6 +70,6 @@
     "tts_more/tts_more_worker/gpt_sovits.py": "ad30396f0c4f6644e6ab06de15ff780891da9708cbdf18f0f635a86c45b3209f",
     "tts_more/tts_more_worker/indextts.py": "90f0ceb9780e5e2d23318f693cb2a769dc22e81c1e2f89edcba3ff319a1164c4",
     "tts_more/verify-release-asset-set.py": "82587385afa57500be5f29f72c7e2e64e4f9bf260cd3425e2680e2e7874f49e3",
-    "\u4f7f\u7528\u8bf4\u660e-\u5148\u770b\u8fd9\u91cc.txt": "1f58ea26696ea5c9cda74e9635decb0ac27bab465d9629a50fdb9b3563e849ad"
+    "\u4f7f\u7528\u8bf4\u660e-\u5148\u770b\u8fd9\u91cc.txt": "ed112037a0a04f1de1be974cccccf70faaab53498e4bb7f22c30569bf7c8ced5"
   }
 }

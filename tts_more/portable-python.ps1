@@ -27,6 +27,23 @@ function Test-PortablePythonCancelled {
     return $CancelFile -and [System.IO.File]::Exists($CancelFile)
 }
 
+function New-PortableOwnedSiblingPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][ValidateSet('px', 'pi', 'pu', 'pb')][string]$Prefix
+    )
+
+    $destinationFull = [System.IO.Path]::GetFullPath($Destination)
+    $parent = [System.IO.Path]::GetDirectoryName($destinationFull)
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw "portable owned path requires a parent directory" }
+    $nonceBytes = New-Object byte[] 16
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($nonceBytes) }
+    finally { $generator.Dispose() }
+    $nonce = ([System.BitConverter]::ToString($nonceBytes)).Replace('-', '').ToLowerInvariant()
+    return Join-Path $parent ".$Prefix-$nonce"
+}
+
 function Set-PortableDownloadHeaders {
     param(
         [Parameter(Mandatory = $true)][System.Net.Http.HttpRequestMessage]$Request,
@@ -199,7 +216,7 @@ function Expand-PortablePythonArchive {
     }
     $parent = [System.IO.Path]::GetDirectoryName($Destination)
     [System.IO.Directory]::CreateDirectory($parent) | Out-Null
-    $temporary = Join-Path $parent ("." + [System.IO.Path]::GetFileName($Destination) + ".extract-" + [guid]::NewGuid().ToString("N"))
+    $temporary = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'px'
     [System.IO.Directory]::CreateDirectory($temporary) | Out-Null
     $zip = $null
     try {
@@ -283,7 +300,7 @@ function Export-PortableUvExecutable {
         $matches = @($zip.Entries | Where-Object { $_.FullName -ceq $ArchiveEntry })
         if ($matches.Count -ne 1) { throw "uv wheel must contain exactly one declared entry: $ArchiveEntry" }
         [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($Destination)) | Out-Null
-        $temporary = "$Destination.partial-$([guid]::NewGuid().ToString('N'))"
+        $temporary = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pu'
         try {
             $input = $matches[0].Open()
             $output = New-Object System.IO.FileStream($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
@@ -295,7 +312,7 @@ function Export-PortableUvExecutable {
                     Remove-Item -LiteralPath $temporary -Force
                 }
                 else {
-                    $backup = "$Destination.backup-$([guid]::NewGuid().ToString('N'))"
+                    $backup = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pb'
                     try {
                         [System.IO.File]::Replace($temporary, $Destination, $backup, $true)
                         Remove-Item -LiteralPath $backup -Force
@@ -355,7 +372,7 @@ function Install-PortablePythonRuntime {
 
     $destinationParent = [System.IO.Path]::GetDirectoryName($Destination)
     [System.IO.Directory]::CreateDirectory($destinationParent) | Out-Null
-    $candidate = Join-Path $destinationParent ("." + [System.IO.Path]::GetFileName($Destination) + ".install-" + [guid]::NewGuid().ToString('N'))
+    $candidate = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pi'
     try {
         Expand-PortablePythonArchive -Archive $pythonArchive -Destination $candidate -ExpectedVersion ([string]$lock.python_version)
         $candidatePython = Join-Path $candidate ([string]$lock.assets.python.archive_entry)

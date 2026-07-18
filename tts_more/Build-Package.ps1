@@ -496,9 +496,9 @@ if (
     throw "WorkRoot must be outside source checkout. Set -WorkRoot to a directory outside '$Root' (for example C:\tm)."
 }
 [void](Assert-PortableWorkPath -CandidatePath $workBase)
-$workIdentity = "tts-more-worker-$PID-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
+$workIdentity = "w-$PID-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
 $work = [IO.Path]::GetFullPath((Join-Path $workBase $workIdentity))
-$stage = Join-Path $work $packageName
+$stage = Join-Path $work "s"
 $revision = (& git -C $Root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch "^[0-9a-f]{40}$") { throw "source revision is not available" }
 
@@ -564,7 +564,8 @@ function Assert-PortableTreePathBudget {
         (Join-Path $stage "licenses\INTEGRATION-LICENSE"),
         (Join-Path $stage "licenses\INTEGRATION-NOTICE"),
         (Join-Path $stage "licenses\THIRD_PARTY_NOTICES.json"),
-        (Join-Path $stage "SHA256SUMS.txt")
+        (Join-Path $stage "SHA256SUMS.txt"),
+        (Join-Path $stage "runtime\staging\Lib\site-packages\transformers\utils\dummy_essentia_and_librosa_and_pretty_midi_and_scipy_and_torch_objects.py")
     ) + @($rootEntries | ForEach-Object { Join-Path $stage $_ })
     foreach ($projectedPath in $generatedPaths) {
         Update-PortablePathBudget -ProjectedPath $projectedPath -MaximumLength ([ref]$maximumLength) -MaximumPath ([ref]$maximumPath)

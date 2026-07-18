@@ -330,7 +330,7 @@ function Invoke-PortablePythonSourceProbe {
     $probeExitCode = -1
     try {
         $ErrorActionPreference = "Continue"
-        $probeOutput = @(& $resolvedPython -c $bootstrap $resolvedSourceRoot $ImportProbe 2>&1)
+        $probeOutput = @(& $resolvedPython -B -c $bootstrap $resolvedSourceRoot $ImportProbe 2>&1)
         $probeExitCode = $LASTEXITCODE
     }
     finally {

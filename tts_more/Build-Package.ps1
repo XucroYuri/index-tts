@@ -963,6 +963,8 @@ if ($Profile -eq "Full") {
     Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
     $runtimeLockForProbe = Get-Content -LiteralPath (Join-Path $stagedBundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
     $runtimeCrossVolumeProbe = Test-WorkerFullRuntimeOnOtherVolume -PackageRoot $stage -ExpectedPython ([string]$runtimeLockForProbe.python_version) -ImportProbe ([string]$runtimeLockForProbe.import_probe)
+    Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
+    Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
     $statePath = Join-Path $stage "data\local\install-state.json"
     $profileOutput = @(& $buildPython (Join-Path $Bundle "portable_packages.py") resolve-full-profile --state $statePath --component ([string]$config.component) --build-id ([string]$manifest.build_id) --requested-profile $Device.ToLowerInvariant() 2>&1)
     $profileExit = $LASTEXITCODE

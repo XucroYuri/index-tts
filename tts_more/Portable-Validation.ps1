@@ -320,8 +320,20 @@ function Invoke-PortablePythonSourceProbe {
         $ErrorActionPreference = $previousErrorActionPreference
     }
     if ($probeExitCode -ne 0) {
-        $detail = (@($probeOutput | ForEach-Object { [string]$_ } | Select-Object -First 8) -join [Environment]::NewLine).Trim()
-        if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + "... [truncated]" }
+        $probeLines = @($probeOutput | ForEach-Object { [string]$_ })
+        $selectedLines = if ($probeLines.Count -le 8) {
+            @($probeLines)
+        } else {
+            @($probeLines | Select-Object -First 3) +
+                @("... [$($probeLines.Count - 7) diagnostic lines omitted] ...") +
+                @($probeLines | Select-Object -Last 4)
+        }
+        $boundedLines = @($selectedLines | ForEach-Object {
+            $line = [string]$_
+            if ($line.Length -le 448) { $line }
+            else { $line.Substring(0, 224) + "... [line truncated] ..." + $line.Substring($line.Length - 224) }
+        })
+        $detail = ($boundedLines -join [Environment]::NewLine).Trim()
         if ([string]::IsNullOrWhiteSpace($detail)) { $detail = "no diagnostic output" }
         throw "package runtime import probe failed: $detail"
     }

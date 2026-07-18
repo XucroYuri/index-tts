@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "c3896f751606faa3b815951021e19eddffa5e3ef",
+  "source_revision": "76468314732d2862a7d8044ce2f80fd88bfef1d1",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -16,7 +16,7 @@
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",
     "tts_more/NOTICE.integration": "352c42d750d17cb1182944689d7fbab46ebc1e5fd0cedd9102644db1afe6f6f2",
     "tts_more/Portable-Paths.ps1": "7831a05ebdd4cb868ce22bf8ffb2e9fec12ee2abdf7f12cc5fda2996e5259684",
-    "tts_more/Portable-Validation.ps1": "5c4c176a795f78170aa1eb9dd0189b5d3ea5683118bf92e80daeda53160fcc7d",
+    "tts_more/Portable-Validation.ps1": "af7900216190f199997d568bb1fefbee4ff0666b51cc63c023891b23476e3ee4",
     "tts_more/Repair.ps1": "7035ba4e4592d663adced02beeb6fa551029ca6bacd2acb1a15fde7babec5847",
     "tts_more/Resolve-PortableBuildPython.ps1": "723056106a99a97cb2a2ffe6bcf2e3e01f64aa3f1e1b8471a942ac236c61ef0b",
     "tts_more/Show-PortableProgress.ps1": "da36c0a6fc1bd461a3103ad4ec8b9ab970400920d893b8ac6c84fd7dd1ef4e5f",

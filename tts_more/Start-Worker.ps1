@@ -55,8 +55,9 @@ switch ([string]$config.component) {
 }
 $process = $null
 $created = ""
+$startArgumentLine = ConvertTo-PortableWindowsArgumentLine -Arguments $arguments
 try {
-    $process = Start-Process -FilePath $Python -ArgumentList $arguments -WorkingDirectory $SourceRoot -WindowStyle Hidden -PassThru
+    $process = Start-Process -FilePath $Python -ArgumentList $startArgumentLine -WorkingDirectory $SourceRoot -WindowStyle Hidden -PassThru
     $created = $process.StartTime.ToUniversalTime().ToString("o")
     & $Python $Launcher write-process-record --package-root $Root --record-path $recordPath --pid $process.Id --parent-pid $PID --process-created-at $created --executable $Python --port $Port --build-id $buildId -- @arguments
     if ($LASTEXITCODE -ne 0) { throw "failed to write worker ownership record" }

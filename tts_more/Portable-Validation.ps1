@@ -1,5 +1,50 @@
 Set-StrictMode -Version Latest
 
+function ConvertTo-PortableWindowsArgumentLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Arguments
+    )
+
+    $encoded = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($argument in @($Arguments)) {
+        if ($null -eq $argument) { throw "Windows process arguments must not contain null" }
+
+        $value = [string]$argument
+        $builder = New-Object System.Text.StringBuilder
+        [void]$builder.Append('"')
+        $backslashCount = 0
+
+        foreach ($character in $value.ToCharArray()) {
+            if ($character -eq '\') {
+                $backslashCount++
+                continue
+            }
+            if ($character -eq '"') {
+                [void]$builder.Append(('\' * (($backslashCount * 2) + 1)))
+                [void]$builder.Append('"')
+                $backslashCount = 0
+                continue
+            }
+            if ($backslashCount -gt 0) {
+                [void]$builder.Append(('\' * $backslashCount))
+                $backslashCount = 0
+            }
+            [void]$builder.Append($character)
+        }
+
+        if ($backslashCount -gt 0) {
+            [void]$builder.Append(('\' * ($backslashCount * 2)))
+        }
+        [void]$builder.Append('"')
+        [void]$encoded.Add($builder.ToString())
+    }
+
+    return $encoded -join ' '
+}
+
 function Get-PortableFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
     $stream = [IO.File]::OpenRead($Path)

@@ -658,6 +658,14 @@ $argumentStrings = @(
 Assert-Contract ($argumentStrings -ccontains "-m" -and $argumentStrings -ccontains "uvicorn") "worker arguments do not execute uvicorn as a module"
 Assert-Contract (Test-ContractContainsMemberPath $argumentAssignments[0].Right "config.module") "worker arguments do not use the configured worker module"
 
+$startArgumentLineAssignments = @(Get-ContractAssignments $worker "startArgumentLine")
+Assert-Contract ($startArgumentLineAssignments.Count -eq 1) "worker serialized argument line must have exactly one active assignment"
+Assert-Contract (Test-ContractTopLevelAssignment $startArgumentLineAssignments[0]) "worker serialized argument line assignment is not an active top-level statement"
+$serializers = @(Get-ContractCommands $startArgumentLineAssignments[0].Right "ConvertTo-PortableWindowsArgumentLine")
+Assert-Contract ($serializers.Count -eq 1) "worker does not use the shared Windows argument serializer exactly once"
+$serializerArguments = Get-ContractParameterArgument $serializers[0] "Arguments"
+Assert-Contract (Test-ContractVariable $serializerArguments "arguments") "worker serializer does not consume the logical uvicorn arguments"
+
 $processAssignments = @(Get-ContractAssignments $worker "process")
 $startAssignments = @($processAssignments | Where-Object { @(Get-ContractCommands $_.Right "Start-Process").Count -eq 1 })
 $nullAssignments = @($processAssignments | Where-Object {
@@ -695,7 +703,7 @@ $filePath = Get-ContractParameterArgument $startProcesses[0] "FilePath"
 $argumentList = Get-ContractParameterArgument $startProcesses[0] "ArgumentList"
 $workingDirectory = Get-ContractParameterArgument $startProcesses[0] "WorkingDirectory"
 Assert-Contract (Test-ContractVariable $filePath "Python") "worker service process does not use package-private Python"
-Assert-Contract (Test-ContractVariable $argumentList "arguments") "worker service process does not use the uvicorn arguments"
+Assert-Contract (Test-ContractVariable $argumentList "startArgumentLine") "worker service process does not use the serialized uvicorn argument line"
 Assert-Contract (Test-ContractVariable $workingDirectory "SourceRoot") "worker service process does not use the resolved upstream source root"
 
 $forbiddenParameters = @(

@@ -150,10 +150,13 @@ class ReleaseAssetGateContractTests(unittest.TestCase):
         self.assertIn('$fullOutput -join "`n"', build)
         self.assertIn('-notmatch "profile=full"', build)
         self.assertIn("exit 0", build)
-        self.assertLess(
-            build.index("full profile refusal probe failed"),
-            build.index("exit 0"),
+        validated_success_exit = (
+            '            throw "full profile refusal probe failed:'
+            " exit=$fullExit output=$($fullOutput -join ' | ')\"\n"
+            "          }\n"
+            "          exit 0"
         )
+        self.assertIn(validated_success_exit, build)
         self.assertNotIn(
             "try { .\\Build-Package.ps1 -Profile Full",
             build,

@@ -592,12 +592,27 @@ function Remove-WorkerFullRuntimeBytecode {
     param([Parameter(Mandatory = $true)][string]$PackageRoot)
     $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot "runtime\live"))
     foreach ($directory in @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force | Where-Object { $_.Name -eq "__pycache__" } | Sort-Object FullName -Descending)) {
-        if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
-        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+        try {
+            $directoryAttributes = [IO.File]::GetAttributes($directory.FullName)
+            if (($directoryAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+            Remove-WorkerOwnedDirectoryContents -Path $directory.FullName -AllowMissing
+            [IO.Directory]::Delete($directory.FullName, $false)
+        }
+        catch {
+            if (Test-WorkerOwnedMissingPathFailure -Failure $_) { continue }
+            throw
+        }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Force -Filter "*.pyc")) {
-        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
-        Remove-Item -LiteralPath $file.FullName -Force
+        try {
+            $fileAttributes = [IO.File]::GetAttributes($file.FullName)
+            if (($fileAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+            [IO.File]::Delete($file.FullName)
+        }
+        catch {
+            if (Test-WorkerOwnedMissingPathFailure -Failure $_) { continue }
+            throw
+        }
     }
 }
 
@@ -985,9 +1000,7 @@ finally {
             if (![string]::Equals($cleanupIdentity, $createdWorkIdentity, [StringComparison]::Ordinal)) {
                 throw "worker package staging handle identity changed unexpectedly: $resolvedWork"
             }
-            foreach ($child in @(Get-ChildItem -LiteralPath $resolvedWork -Force)) {
-                Remove-Item -LiteralPath $child.FullName -Recurse -Force
-            }
+            Remove-WorkerOwnedDirectoryContents -Path $resolvedWork
             if (@(Get-ChildItem -LiteralPath $resolvedWork -Force).Count -ne 0) {
                 throw "worker package staging directory is not empty after child cleanup; refusing recursive root deletion: $resolvedWork"
             }

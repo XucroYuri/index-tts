@@ -354,40 +354,90 @@ function New-WorkerUvCacheLeaf {
     return "u-$(([BitConverter]::ToString($nonceBytes)).Replace('-', '').ToLowerInvariant())"
 }
 
+function Test-WorkerOwnedMissingPathFailure {
+    param(
+        [Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$Failure
+    )
+
+    $exception = $Failure.Exception
+    while ($null -ne $exception) {
+        if (
+            $exception -is [Management.Automation.ItemNotFoundException] -or
+            $exception -is [IO.FileNotFoundException] -or
+            $exception -is [IO.DirectoryNotFoundException]
+        ) {
+            return $true
+        }
+        if (
+            $exception -is [UnauthorizedAccessException] -or
+            $exception -is [IO.IOException]
+        ) {
+            return $false
+        }
+        if (
+            $exception -isnot [Management.Automation.RuntimeException] -and
+            $exception -isnot [Reflection.TargetInvocationException]
+        ) {
+            return $false
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
 function Remove-WorkerOwnedDirectoryContents {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [switch]$AllowMissing
     )
 
-    try { $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
-    catch [Management.Automation.ItemNotFoundException] {
-        if ($AllowMissing) { return }
+    $maximumPasses = 8
+    for ($pass = 0; $pass -lt $maximumPasses; $pass++) {
+        try { $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
+        catch {
+            if (Test-WorkerOwnedMissingPathFailure -Failure $_) {
+                if ($AllowMissing -and ![IO.Directory]::Exists($Path)) { return }
+                if ($pass -lt ($maximumPasses - 1)) { continue }
+            }
+            throw
+        }
+
+        if ($children.Count -eq 0) { return }
+        foreach ($child in $children) {
+            try {
+                $childPath = $child.FullName
+                $childAttributes = [IO.File]::GetAttributes($childPath)
+                if (($childAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "refusing to clean a worker-owned directory containing a reparse point: $childPath"
+                }
+                if (($childAttributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                    Remove-WorkerOwnedDirectoryContents -Path $childPath -AllowMissing
+                    [IO.Directory]::Delete($childPath, $false)
+                }
+                else {
+                    [IO.File]::Delete($childPath)
+                }
+            }
+            catch {
+                if (Test-WorkerOwnedMissingPathFailure -Failure $_) { continue }
+                throw
+            }
+        }
+    }
+
+    try { $remainingChildren = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
+    catch {
+        if (
+            (Test-WorkerOwnedMissingPathFailure -Failure $_) -and
+            $AllowMissing -and
+            ![IO.Directory]::Exists($Path)
+        ) {
+            return
+        }
         throw
     }
-    catch [IO.DirectoryNotFoundException] {
-        if ($AllowMissing) { return }
-        throw
-    }
-    foreach ($child in $children) {
-        try { $currentChild = Get-Item -LiteralPath $child.FullName -Force -ErrorAction Stop }
-        catch [Management.Automation.ItemNotFoundException] { continue }
-        catch [IO.FileNotFoundException] { continue }
-        catch [IO.DirectoryNotFoundException] { continue }
-        if (($currentChild.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "refusing to clean a worker-owned directory containing a reparse point: $($currentChild.FullName)"
-        }
-        if ($currentChild.PSIsContainer) {
-            Remove-WorkerOwnedDirectoryContents -Path $currentChild.FullName -AllowMissing
-            try { [IO.Directory]::Delete($currentChild.FullName, $false) }
-            catch [IO.DirectoryNotFoundException] { continue }
-        }
-        else {
-            try { [IO.File]::Delete($currentChild.FullName) }
-            catch [IO.FileNotFoundException] { continue }
-            catch [IO.DirectoryNotFoundException] { continue }
-        }
-    }
+    if ($remainingChildren.Count -eq 0) { return }
+    throw "worker-owned directory remained non-empty after $maximumPasses cleanup passes: $Path"
 }
 
 $Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)

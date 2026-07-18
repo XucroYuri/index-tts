@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "bd9f15e06bd4d0d4dce36304ab8105d53ff44833",
+  "source_revision": "ed4bb7a895046bba4e63b12049bc994a8a3e6ca6",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -10,7 +10,7 @@
     "Start-WebUI.cmd": "07e669f197dde89d98ea43d7fa51e31a542d09225a00827429825405751d4d20",
     "Start.cmd": "1b8034201664752783220b50e2bac8c45e423eb99754a2c61dc9e39f2195d9a2",
     "Stop.cmd": "d44fe7a5bf570ccfb476d9bc197fe1874a57bda47b72e1eda566e8c2c3cef340",
-    "tts_more/Build-Package.ps1": "e46fa85125fdae34a89862b7ac1074f35014e6891f0043fea80344c475ebcd99",
+    "tts_more/Build-Package.ps1": "3deb83c078fabe6fdac182c74c2042266471b002620126eb9e715d2eaf9a95c7",
     "tts_more/Initialize.ps1": "3fc4e9f33498f8a5015c9d497610e8881303e3cec251439ee761efd4c5b7ff75",
     "tts_more/Invoke-PortableStart.ps1": "d7e5740568ad1b0bc257e024e4f73148270a409e679047d380ad66b6d39893ff",
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",

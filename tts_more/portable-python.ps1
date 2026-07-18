@@ -363,23 +363,30 @@ function Export-PortableUvExecutable {
         $temporary = $null
         $temporaryOwned = $false
         try {
-            $output = $null
-            for ($attempt = 0; $attempt -lt 128; $attempt++) {
-                $proposed = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pu'
-                try {
-                    $output = New-Object System.IO.FileStream($proposed, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-                    $temporary = $proposed
-                    $temporaryOwned = $true
-                    break
-                }
-                catch {
-                    if ([System.IO.File]::Exists($proposed) -or [System.IO.Directory]::Exists($proposed)) { continue }
-                    throw
-                }
-            }
-            if (!$temporaryOwned) { throw "failed to claim a unique portable uv temporary file after 128 attempts" }
             $input = $matches[0].Open()
-            try { $input.CopyTo($output); $output.Flush($true) } finally { $output.Dispose(); $input.Dispose() }
+            $output = $null
+            try {
+                for ($attempt = 0; $attempt -lt 128; $attempt++) {
+                    $proposed = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pu'
+                    try {
+                        $output = New-Object System.IO.FileStream($proposed, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                        $temporary = $proposed
+                        $temporaryOwned = $true
+                        break
+                    }
+                    catch {
+                        if ([System.IO.File]::Exists($proposed) -or [System.IO.Directory]::Exists($proposed)) { continue }
+                        throw
+                    }
+                }
+                if (!$temporaryOwned) { throw "failed to claim a unique portable uv temporary file after 128 attempts" }
+                $input.CopyTo($output)
+                $output.Flush($true)
+            }
+            finally {
+                if ($output) { $output.Dispose() }
+                $input.Dispose()
+            }
             if ([System.IO.File]::Exists($Destination)) {
                 $sameLength = (Get-Item -LiteralPath $temporary).Length -eq (Get-Item -LiteralPath $Destination).Length
                 $sameSha = $sameLength -and (Get-PortablePythonFileSha256 -Path $temporary) -eq (Get-PortablePythonFileSha256 -Path $Destination)

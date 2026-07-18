@@ -675,9 +675,12 @@ function Assert-WorkerFullRuntimeBoundary {
     param([Parameter(Mandatory = $true)][string]$PackageRoot)
     foreach ($entry in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force)) {
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full package staging contains a reparse point: $($entry.FullName)" }
-        foreach ($segment in @($entry.FullName.Substring($PackageRoot.Length).TrimStart("\", "/") -split '[\\/]')) {
+        $segments = @($entry.FullName.Substring($PackageRoot.Length).TrimStart("\", "/") -split '[\\/]' | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+        for ($segmentIndex = 0; $segmentIndex -lt $segments.Count; $segmentIndex++) {
+            $segment = [string]$segments[$segmentIndex]
+            $isDirectorySegment = $segmentIndex -lt ($segments.Count - 1) -or $entry.PSIsContainer
             if ($segment -eq "__pycache__" -or $segment.EndsWith(".pyc", [StringComparison]::OrdinalIgnoreCase)) { throw "Full package staging contains Python bytecode: $($entry.FullName)" }
-            if ($segment -in @("pyvenv.cfg", "conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*") { throw "Full package staging contains forbidden portable-runtime content: $($entry.FullName)" }
+            if ($segment -eq "pyvenv.cfg" -or ($isDirectorySegment -and ($segment -in @("conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*"))) { throw "Full package staging contains forbidden portable-runtime content: $($entry.FullName)" }
         }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File -Force)) {
@@ -729,9 +732,13 @@ function Assert-WorkerFullArchiveBoundary {
         $archive = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Read, $false)
         try {
             foreach ($entry in $archive.Entries) {
-                foreach ($segment in @($entry.FullName -split '[/\\]')) {
+                $segments = @($entry.FullName -split '[/\\]' | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+                $entryIsDirectory = $entry.FullName.EndsWith("/", [StringComparison]::Ordinal) -or $entry.FullName.EndsWith("\", [StringComparison]::Ordinal)
+                for ($segmentIndex = 0; $segmentIndex -lt $segments.Count; $segmentIndex++) {
+                    $segment = [string]$segments[$segmentIndex]
+                    $isDirectorySegment = $segmentIndex -lt ($segments.Count - 1) -or $entryIsDirectory
                     if ($segment -eq "__pycache__" -or $segment.EndsWith(".pyc", [StringComparison]::OrdinalIgnoreCase)) { throw "Full package archive contains Python bytecode: $($entry.FullName)" }
-                    if ($segment -in @("pyvenv.cfg", "conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*") { throw "Full package archive contains forbidden portable-runtime content: $($entry.FullName)" }
+                    if ($segment -eq "pyvenv.cfg" -or ($isDirectorySegment -and ($segment -in @("conda-meta", "condabin", "Miniforge") -or $segment -like "Miniforge*"))) { throw "Full package archive contains forbidden portable-runtime content: $($entry.FullName)" }
                 }
             }
         }

@@ -32,6 +32,12 @@ $live = Join-Path $Root "runtime\live"
 $staging = Join-Path $Root "runtime\staging"
 $state = Join-Path $Root "data\local\install-state.json"
 
+Assert-PortableMutableTreeBoundary -Root $Root -RelativePath "data\local" -Label "portable local data"
+Assert-PortableMutableTreeBoundary -Root $Root -RelativePath "data\cache" -Label "portable cache"
+Assert-PortableMutableTreeBoundary -Root $Root -RelativePath "runtime\live" -Label "portable live runtime"
+Assert-PortableMutableTreeBoundary -Root $Root -RelativePath "runtime\staging" -Label "portable staging runtime"
+Assert-PortableMutableTreeBoundary -Root $Root -RelativePath "runtime\previous" -Label "portable previous runtime"
+
 function Repair-PortableWorkerStaleState {
     param(
         [Parameter(Mandatory = $true)][string]$SourceRoot,
@@ -127,27 +133,33 @@ function Publish-PortableRuntimeTransaction {
         [Parameter(Mandatory = $true)][string]$Backup,
         [Parameter(Mandatory = $true)][scriptblock]$CommitState
     )
-    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Recurse -Force }
+    $transactionRoot = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $Live)))
+    if (![string]::Equals([IO.Path]::GetFullPath($Staging), (Join-Path $transactionRoot "runtime\staging"), [StringComparison]::OrdinalIgnoreCase) -or
+        ![string]::Equals([IO.Path]::GetFullPath($Live), (Join-Path $transactionRoot "runtime\live"), [StringComparison]::OrdinalIgnoreCase) -or
+        ![string]::Equals([IO.Path]::GetFullPath($Backup), (Join-Path $transactionRoot "runtime\previous"), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "runtime transaction paths must be fixed package-private directories"
+    }
+    if (Test-Path -LiteralPath $Backup) { Remove-PortableMutableDirectory -Root $transactionRoot -RelativePath "runtime\previous" -Label "portable previous runtime" }
     $previousMoved = $false
     try {
         if (Test-Path -LiteralPath $Live) {
-            Move-Item -LiteralPath $Live -Destination $Backup
+            Move-PortableMutableDirectory -Root $transactionRoot -SourceRelativePath "runtime\live" -DestinationRelativePath "runtime\previous" -Label "portable runtime backup"
             $previousMoved = $true
         }
-        Move-Item -LiteralPath $Staging -Destination $Live
+        Move-PortableMutableDirectory -Root $transactionRoot -SourceRelativePath "runtime\staging" -DestinationRelativePath "runtime\live" -Label "portable runtime publish"
         & $CommitState
     }
     catch {
         $failure = $_
         try {
-            if (Test-Path -LiteralPath $Live) { Remove-Item -LiteralPath $Live -Recurse -Force }
-            if ($previousMoved -and (Test-Path -LiteralPath $Backup)) { Move-Item -LiteralPath $Backup -Destination $Live }
+            if (Test-Path -LiteralPath $Live) { Remove-PortableMutableDirectory -Root $transactionRoot -RelativePath "runtime\live" -Label "failed portable runtime" }
+            if ($previousMoved -and (Test-Path -LiteralPath $Backup)) { Move-PortableMutableDirectory -Root $transactionRoot -SourceRelativePath "runtime\previous" -DestinationRelativePath "runtime\live" -Label "portable runtime rollback" }
         }
         catch { Write-Warning "runtime rollback encountered a secondary failure: $($_.Exception.Message)" }
         throw $failure
     }
     if ($previousMoved -and (Test-Path -LiteralPath $Backup)) {
-        try { Remove-Item -LiteralPath $Backup -Recurse -Force }
+        try { Remove-PortableMutableDirectory -Root $transactionRoot -RelativePath "runtime\previous" -Label "portable previous runtime" }
         catch { Write-Warning "committed runtime is valid, but previous runtime cleanup failed: $($_.Exception.Message)" }
     }
 }
@@ -177,7 +189,7 @@ if ($requestedProfileMatchesState -and $lockedAssetsComplete -and $runtimeComple
 if ($Repair) { Write-Host "repairing only missing or invalid locked assets; user data is preserved" }
 
 . (Join-Path $Bundle "portable-python.ps1")
-if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+if (Test-Path -LiteralPath $staging) { Remove-PortableMutableDirectory -Root $Root -RelativePath "runtime\staging" -Label "portable staging runtime" }
 try {
     $PortableRuntime = Install-PortablePythonRuntime `
         -PackageRoot $Root `
@@ -212,16 +224,29 @@ foreach ($asset in $payloads) {
     if ($LASTEXITCODE -eq 20) { exit 20 }
     if ($LASTEXITCODE -ne 0) { throw "locked runtime asset failed: $($asset.id)" }
     if ($asset.extract_to) {
-        $destination = Join-Path $Root ([string]$asset.extract_to)
+        $destinationRelative = [string]$asset.extract_to
+        $extractStageRelative = "$destinationRelative.staging"
+        Assert-PortableMutableTreeBoundary -Root $Root -RelativePath $destinationRelative -Label "portable runtime payload"
+        Assert-PortableMutableTreeBoundary -Root $Root -RelativePath $extractStageRelative -Label "portable runtime payload staging"
+        $destination = Resolve-PortablePackagePath -Root $Root -RelativePath $destinationRelative -Label "portable runtime payload"
         $marker = Join-Path $destination ".tts-more-asset.sha256"
         if (!(Test-Path -LiteralPath $marker) -or (Get-Content -LiteralPath $marker -Raw).Trim() -ne [string]$asset.sha256) {
-            $extractStage = "$destination.staging"
-            if (Test-Path -LiteralPath $extractStage) { Remove-Item -LiteralPath $extractStage -Recurse -Force }
+            $extractStage = Resolve-PortablePackagePath -Root $Root -RelativePath $extractStageRelative -Label "portable runtime payload staging"
+            if (Test-Path -LiteralPath $extractStage) { Remove-PortableMutableDirectory -Root $Root -RelativePath $extractStageRelative -Label "portable runtime payload staging" }
             Expand-Archive -LiteralPath $archivePath -DestinationPath $extractStage
+            Assert-PortableMutableTreeBoundary -Root $Root -RelativePath $extractStageRelative -Label "extracted portable runtime payload"
             $children = @(Get-ChildItem -LiteralPath $extractStage -Force)
             $payloadRoot = if ($children.Count -eq 1 -and $children[0].PSIsContainer) { $children[0].FullName } else { $extractStage }
-            if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
-            if ($payloadRoot -eq $extractStage) { Move-Item -LiteralPath $extractStage -Destination $destination } else { Move-Item -LiteralPath $payloadRoot -Destination $destination; Remove-Item -LiteralPath $extractStage -Recurse -Force }
+            if (Test-Path -LiteralPath $destination) { Remove-PortableMutableDirectory -Root $Root -RelativePath $destinationRelative -Label "portable runtime payload" }
+            if ([string]::Equals([IO.Path]::GetFullPath($payloadRoot), [IO.Path]::GetFullPath($extractStage), [StringComparison]::OrdinalIgnoreCase)) {
+                Move-PortableMutableDirectory -Root $Root -SourceRelativePath $extractStageRelative -DestinationRelativePath $destinationRelative -Label "portable runtime payload publish"
+            }
+            else {
+                $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                $payloadRootRelative = [IO.Path]::GetFullPath($payloadRoot).Substring($resolvedRoot.Length).TrimStart('\', '/')
+                Move-PortableMutableDirectory -Root $Root -SourceRelativePath $payloadRootRelative -DestinationRelativePath $destinationRelative -Label "portable runtime payload publish"
+                Remove-PortableMutableDirectory -Root $Root -RelativePath $extractStageRelative -Label "portable runtime payload staging"
+            }
             [string]$asset.sha256 | Set-Content -LiteralPath (Join-Path $destination ".tts-more-asset.sha256") -Encoding ASCII
         }
     }

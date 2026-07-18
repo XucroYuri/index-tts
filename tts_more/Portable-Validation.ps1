@@ -227,6 +227,105 @@ function Resolve-PortablePackagePath {
     return $resolved
 }
 
+function Get-PortableMutableTreeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $resolved = Resolve-PortablePackagePath -Root $Root -RelativePath $RelativePath -Label $Label
+    if (!(Test-Path -LiteralPath $resolved)) { return @() }
+    if (!(Test-Path -LiteralPath $resolved -PathType Container)) {
+        throw "$Label must be a directory"
+    }
+    $pending = [Collections.Generic.Queue[string]]::new()
+    $entries = [Collections.Generic.List[object]]::new()
+    $pending.Enqueue($resolved)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Dequeue()
+        foreach ($child in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+            $attributes = [IO.File]::GetAttributes($child.FullName)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label contains a reparse point: $($child.FullName)"
+            }
+            $isDirectory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
+            $entries.Add([pscustomobject]@{
+                FullName = [IO.Path]::GetFullPath($child.FullName)
+                IsDirectory = $isDirectory
+            })
+            if ($isDirectory) { $pending.Enqueue($child.FullName) }
+        }
+    }
+    return @($entries)
+}
+
+function Assert-PortableMutableTreeBoundary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    [void](Resolve-PortablePackagePath -Root $Root -RelativePath $RelativePath -Label $Label)
+    [void](Get-PortableMutableTreeSnapshot -Root $Root -RelativePath $RelativePath -Label $Label)
+}
+
+function Remove-PortableMutableDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $resolvedRoot = Assert-PortablePackageRoot -Root $Root
+    $resolved = Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $RelativePath -Label $Label
+    if (!(Test-Path -LiteralPath $resolved)) { return }
+    $entries = @(Get-PortableMutableTreeSnapshot -Root $resolvedRoot -RelativePath $RelativePath -Label $Label)
+
+    foreach ($entry in @($entries | Where-Object { !$_.IsDirectory } | Sort-Object { $_.FullName.Length } -Descending)) {
+        $relative = $entry.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/')
+        $current = Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $relative -Label $Label -MustExist
+        $attributes = [IO.File]::GetAttributes($current)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+            throw "$Label changed during safe cleanup"
+        }
+        if (($attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+            [IO.File]::SetAttributes($current, ($attributes -band (-bnot [IO.FileAttributes]::ReadOnly)))
+        }
+        [IO.File]::Delete($current)
+    }
+    foreach ($entry in @($entries | Where-Object { $_.IsDirectory } | Sort-Object { $_.FullName.Length } -Descending)) {
+        $relative = $entry.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/')
+        $current = Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $relative -Label $Label -MustExist
+        $attributes = [IO.File]::GetAttributes($current)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -eq 0) {
+            throw "$Label changed during safe cleanup"
+        }
+        [IO.Directory]::Delete($current, $false)
+    }
+    $resolved = Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $RelativePath -Label $Label -MustExist
+    if (([IO.File]::GetAttributes($resolved) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label changed during safe cleanup"
+    }
+    [IO.Directory]::Delete($resolved, $false)
+}
+
+function Move-PortableMutableDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$SourceRelativePath,
+        [Parameter(Mandatory = $true)][string]$DestinationRelativePath,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $source = Resolve-PortablePackagePath -Root $Root -RelativePath $SourceRelativePath -Label "$Label source" -MustExist
+    [void](Get-PortableMutableTreeSnapshot -Root $Root -RelativePath $SourceRelativePath -Label "$Label source")
+    $destination = Resolve-PortablePackagePath -Root $Root -RelativePath $DestinationRelativePath -Label "$Label destination"
+    if (Test-Path -LiteralPath $destination) { throw "$Label destination already exists" }
+    [IO.Directory]::Move($source, $destination)
+}
+
 function Assert-PortableExactOperationContract {
     param(
         [Parameter(Mandatory = $true)][string]$OperationsRoot,

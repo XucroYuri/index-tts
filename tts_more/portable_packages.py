@@ -71,6 +71,42 @@ SAFE_PACKAGE_ROOT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$")
 SAFE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
 PORTABLE_COMPONENTS = frozenset({"tts-more", "gpt-sovits", "indextts", "cosyvoice"})
 RESOLVED_DEVICE_PROFILES = frozenset({"cpu", "cu126", "cu128"})
+HASH_CHUNK_SIZE = 1024 * 1024
+ZIP_METADATA_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _sha256_stream(stream: Any) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(HASH_CHUNK_SIZE), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return _sha256_stream(stream)
+
+
+def _sha256_zip_member(archive: zipfile.ZipFile, name: str) -> str:
+    with archive.open(name, "r") as stream:
+        return _sha256_stream(stream)
+
+
+def _read_zip_metadata(
+    archive: zipfile.ZipFile,
+    name: str,
+    *,
+    max_bytes: int = ZIP_METADATA_MAX_BYTES,
+) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    with archive.open(name, "r") as stream:
+        for chunk in iter(lambda: stream.read(HASH_CHUNK_SIZE), b""):
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"ZIP metadata member exceeds {max_bytes} bytes: {name}")
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def full_package_name(component: str, version: str, resolved_profile: str) -> str:
@@ -195,13 +231,13 @@ def select_full_package(
     report["path"] = str(path)
     report["filename"] = path.name
     try:
-        actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual_sha = _sha256_file(path)
         with zipfile.ZipFile(path) as archive:
             raw_package_root, package_root, relative_names = _single_zip_package_root(archive)
             manifest_name = relative_names.get("package/tts-more-package.json")
             if manifest_name is None:
                 raise ValueError("full ZIP is missing its embedded package manifest")
-            manifest = json.loads(archive.read(manifest_name).decode("utf-8-sig"))
+            manifest = json.loads(_read_zip_metadata(archive, manifest_name).decode("utf-8-sig"))
             _validate_embedded_v2_package(archive, manifest, relative_names)
             if manifest.get("schema_version") != 2:
                 raise ValueError("full ZIP manifest must use schema v2")
@@ -221,7 +257,7 @@ def select_full_package(
             state_name = relative_names.get(_canonical_relative_path(state_relative))
             if state_name is None:
                 raise ValueError("full ZIP install state is missing")
-            state = json.loads(archive.read(state_name).decode("utf-8-sig"))
+            state = json.loads(_read_zip_metadata(archive, state_name).decode("utf-8-sig"))
             resolved = _resolve_full_profile_payload(
                 state,
                 expected_component=component,
@@ -237,13 +273,13 @@ def select_full_package(
             model_lock_name = relative_names[
                 _canonical_relative_path(str(_mapping(manifest.get("models"))["lock"]))
             ]
-            if state.get("runtime_lock_sha256") != hashlib.sha256(
-                archive.read(runtime_lock_name)
-            ).hexdigest():
+            if state.get("runtime_lock_sha256") != _sha256_zip_member(
+                archive, runtime_lock_name
+            ):
                 raise ValueError("full ZIP install state runtime lock digest mismatch")
-            if state.get("model_lock_sha256") != hashlib.sha256(
-                archive.read(model_lock_name)
-            ).hexdigest():
+            if state.get("model_lock_sha256") != _sha256_zip_member(
+                archive, model_lock_name
+            ):
                 raise ValueError("full ZIP install state model lock digest mismatch")
             expected_filename = full_package_name(component, version, resolved)
             expected_root = expected_filename.removesuffix(".zip")
@@ -509,7 +545,7 @@ def _verify_zip_sha256_manifest(
     if sums_name is None:
         raise ValueError("full ZIP SHA256SUMS.txt is missing")
     covered: dict[str, str] = {}
-    for line in archive.read(sums_name).decode("utf-8-sig").splitlines():
+    for line in _read_zip_metadata(archive, sums_name).decode("utf-8-sig").splitlines():
         match = re.fullmatch(r"([0-9a-fA-F]{64})  (.+)", line)
         if match is None or not _is_relative_package_path(match.group(2)):
             raise ValueError("full ZIP SHA256SUMS contains an invalid record")
@@ -521,7 +557,7 @@ def _verify_zip_sha256_manifest(
     if set(covered) != set(files):
         raise ValueError("full ZIP SHA256SUMS exact coverage mismatch")
     for relative, expected in covered.items():
-        if hashlib.sha256(archive.read(files[relative])).hexdigest() != expected:
+        if _sha256_zip_member(archive, files[relative]) != expected:
             raise ValueError(f"full ZIP SHA256SUMS hash mismatch: {relative}")
 
 
@@ -574,7 +610,9 @@ def audit_release_zip(path: Path) -> dict[str, object]:
             if len(manifests) != 1:
                 errors.append("release ZIP must contain exactly one package manifest")
             else:
-                payload = json.loads(archive.read(manifests[0]).decode("utf-8-sig"))
+                payload = json.loads(
+                    _read_zip_metadata(archive, manifests[0]).decode("utf-8-sig")
+                )
                 if payload.get("package_profile") != "bootstrap":
                     errors.append(f"GitHub release upload refused for profile={payload.get('package_profile')}")
                 if payload.get("schema_version") == 2 and isinstance(payload.get("launchers"), dict):
@@ -630,13 +668,15 @@ def audit_release_assets(
             if not report["valid"]:
                 errors.extend(str(error) for error in report["errors"])
                 continue
-            actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            actual_sha = _sha256_file(path)
             with zipfile.ZipFile(path) as archive:
                 raw_package_root, package_root, relative_names = _single_zip_package_root(archive)
                 manifest_name = relative_names.get("package/tts-more-package.json")
                 if manifest_name is None:
                     raise ValueError(f"release ZIP manifest is missing: {path.name}")
-                manifest = json.loads(archive.read(manifest_name).decode("utf-8-sig"))
+                manifest = json.loads(
+                    _read_zip_metadata(archive, manifest_name).decode("utf-8-sig")
+                )
                 _validate_embedded_v2_package(
                     archive,
                     manifest,
@@ -1075,7 +1115,7 @@ def audit_builder_source(root: Path, *, component: str, profile: str) -> dict[st
             normalized_profile != "full"
             or expected is None
             or not candidate_path.is_file()
-            or hashlib.sha256(candidate_path.read_bytes()).hexdigest() != expected
+            or _sha256_file(candidate_path) != expected
         ):
             errors.append(f"unlocked or modified model asset would be embedded: {combined}")
 
@@ -1134,9 +1174,11 @@ def _audit_v2_user_layout(
         return
     try:
         component_config = json.loads(
-            archive.read(relative_names[component_path]).decode("utf-8-sig")
+            _read_zip_metadata(archive, relative_names[component_path]).decode("utf-8-sig")
         )
-        model_payload = json.loads(archive.read(relative_names[model_lock]).decode("utf-8-sig"))
+        model_payload = json.loads(
+            _read_zip_metadata(archive, relative_names[model_lock]).decode("utf-8-sig")
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         errors.append(f"worker staged metadata is invalid: {exc}")
         return
@@ -1223,7 +1265,7 @@ def verify_sha256_manifest(package_root: Path) -> dict[str, object]:
             errors.append(f"SHA256SUMS exact coverage mismatch: missing={missing}, extra={extra}")
         for canonical in sorted(set(covered) & set(files)):
             relative, expected = covered[canonical]
-            actual = hashlib.sha256(files[canonical].read_bytes()).hexdigest()
+            actual = _sha256_file(files[canonical])
             if actual != expected:
                 errors.append(f"SHA256SUMS hash mismatch: {relative}")
     except (OSError, ValueError) as exc:

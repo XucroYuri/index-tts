@@ -77,6 +77,32 @@ function New-PortableOwnedDirectory {
     throw "failed to claim a unique portable directory after 128 attempts"
 }
 
+function Remove-PortablePythonOwnedDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedParent,
+        [Parameter(Mandatory = $true)][ValidateSet('px', 'pi')][string]$Prefix
+    )
+
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $resolvedParent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if (![string]::Equals([IO.Path]::GetDirectoryName($resolved), $resolvedParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "portable owned cleanup path has an unexpected parent"
+    }
+    $leaf = [IO.Path]::GetFileName($resolved)
+    if ($leaf -cnotmatch "^\.$Prefix-[0-9a-f]{32}$") { throw "portable owned cleanup path has an invalid identity" }
+    if (!(Get-Command Remove-PortableMutableDirectory -ErrorAction SilentlyContinue)) {
+        $validationCandidates = @(
+            (Join-Path $PSScriptRoot "Portable-Validation.ps1"),
+            (Join-Path $PSScriptRoot "..\..\scripts\Portable-Validation.ps1")
+        )
+        $validationScript = @($validationCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
+        if ($validationScript.Count -ne 1) { throw "Portable-Validation.ps1 is required for safe owned-directory cleanup" }
+        . ([IO.Path]::GetFullPath([string]$validationScript[0]))
+    }
+    Remove-PortableMutableDirectory -Root $resolvedParent -RelativePath $leaf -Label "portable owned $Prefix directory"
+}
+
 function Set-PortableDownloadHeaders {
     param(
         [Parameter(Mandatory = $true)][System.Net.Http.HttpRequestMessage]$Request,
@@ -314,7 +340,7 @@ function Expand-PortablePythonArchive {
     }
     catch {
         if ($temporaryOwned -and [System.IO.Directory]::Exists($temporary)) {
-            Remove-Item -LiteralPath $temporary -Recurse -Force
+            Remove-PortablePythonOwnedDirectory -Path $temporary -ExpectedParent ([IO.Path]::GetDirectoryName($Destination)) -Prefix 'px'
         }
         throw
     }
@@ -450,6 +476,16 @@ function Install-PortablePythonRuntime {
     $PackageRoot = [System.IO.Path]::GetFullPath($PackageRoot)
     $RuntimeLock = [System.IO.Path]::GetFullPath($RuntimeLock)
     $Destination = [System.IO.Path]::GetFullPath($Destination)
+    if (!(Get-Command Assert-PortableMutableTreeBoundary -ErrorAction SilentlyContinue)) {
+        $validationScript = Join-Path $PSScriptRoot "Portable-Validation.ps1"
+        if (!(Test-Path -LiteralPath $validationScript -PathType Leaf)) { throw "Portable-Validation.ps1 is required for safe runtime installation" }
+        . $validationScript
+    }
+    Assert-PortableMutableTreeBoundary -Root $PackageRoot -RelativePath "data\cache" -Label "portable cache"
+    $packagePrefix = $PackageRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (!$Destination.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "portable Python destination must stay inside the package" }
+    $destinationRelative = $Destination.Substring($packagePrefix.Length)
+    Assert-PortableMutableTreeBoundary -Root $PackageRoot -RelativePath $destinationRelative -Label "portable runtime destination"
     if ([System.IO.Directory]::Exists($Destination) -or [System.IO.File]::Exists($Destination)) {
         throw "portable Python destination already exists: $Destination"
     }
@@ -507,7 +543,7 @@ function Install-PortablePythonRuntime {
     }
     catch {
         if ($candidateOwned -and [System.IO.Directory]::Exists($candidate)) {
-            Remove-Item -LiteralPath $candidate -Recurse -Force
+            Remove-PortablePythonOwnedDirectory -Path $candidate -ExpectedParent ([IO.Path]::GetDirectoryName($Destination)) -Prefix 'pi'
         }
         throw
     }

@@ -21,6 +21,7 @@ ProcessInspector = Callable[[int], dict[str, object] | None]
 Terminator = Callable[[int], None]
 PortInspector = Callable[[int], bool]
 PortOwnerInspector = Callable[[int], set[int]]
+DescendantInspector = Callable[[int], set[int]]
 
 
 def run(command: list[str], **kwargs: Any) -> None:
@@ -272,6 +273,132 @@ def stop_worker(
     return 2
 
 
+def rollback_started_process(
+    package_root: Path,
+    *,
+    pid: int,
+    parent_pid: int,
+    process_created_at: str,
+    executable_path: Path,
+    command: Iterable[str],
+    port: int,
+    build_id: str,
+    inspector: ProcessInspector | None = None,
+    descendant_inspector: DescendantInspector | None = None,
+    terminator: Terminator | None = None,
+    port_owner_inspector: PortOwnerInspector | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout_seconds: float = 15,
+) -> int:
+    """Roll back only the exact process identity created by the current start attempt."""
+    root = _trusted_package_root(package_root)
+    pid = int(pid)
+    parent_pid = int(parent_pid)
+    port = int(port)
+    if pid <= 0 or parent_pid <= 0 or not 1 <= port <= 65535:
+        raise ValueError("rollback identity has an invalid PID, parent PID, or port")
+    executable = executable_path.resolve(strict=True)
+    _ensure_within(root, executable)
+    expected_executable = (root / "runtime" / "live" / "python.exe").resolve(strict=False)
+    if executable != expected_executable:
+        raise RuntimeError("rollback executable is not the package runtime")
+    expected_build_id = "source-checkout"
+    manifest_path = root / "package" / "tts-more-package.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        expected_build_id = str(manifest.get("build_id") or "")
+    if not expected_build_id or str(build_id) != expected_build_id:
+        raise RuntimeError("rollback build identity does not match this package")
+
+    expected_command = list(command)
+    inspect = inspector or _inspect_process
+    inspect_descendants = descendant_inspector or _descendant_process_ids
+    inspect_port_owners = port_owner_inspector or _listener_pids_for_port
+    process = inspect(pid)
+    port_owners = inspect_port_owners(port)
+    if process is None:
+        if port_owners:
+            raise RuntimeError("rollback preserved an unknown port owner after the started process exited")
+        _delete_matching_rollback_record(
+            root,
+            pid=pid,
+            process_created_at=process_created_at,
+            executable=executable,
+            command=expected_command,
+            port=port,
+            build_id=build_id,
+        )
+        return 0
+
+    if (
+        int(process.get("pid") or 0) != pid
+        or int(process.get("parent_pid") or 0) != parent_pid
+        or Path(str(process.get("executable_path") or "")).resolve(strict=False) != executable
+        or not _same_process_creation_time(
+            str(process.get("created_at") or ""), process_created_at
+        )
+        or process.get("command_args") != expected_command
+    ):
+        raise RuntimeError("rollback process identity does not match the just-started process")
+    owned_pids = {pid, *inspect_descendants(pid)}
+    if port_owners - owned_pids:
+        raise RuntimeError("rollback preserved an unknown port owner")
+
+    (terminator or _terminate_process_tree)(pid)
+    deadline = time.monotonic() + max(0, timeout_seconds)
+    while time.monotonic() <= deadline:
+        process = inspect(pid)
+        port_owners = inspect_port_owners(port)
+        if process is None and not port_owners:
+            _delete_matching_rollback_record(
+                root,
+                pid=pid,
+                process_created_at=process_created_at,
+                executable=executable,
+                command=expected_command,
+                port=port,
+                build_id=build_id,
+            )
+            return 0
+        if timeout_seconds <= 0:
+            break
+        sleep(min(0.2, timeout_seconds))
+    return 2
+
+
+def _delete_matching_rollback_record(
+    root: Path,
+    *,
+    pid: int,
+    process_created_at: str,
+    executable: Path,
+    command: list[str],
+    port: int,
+    build_id: str,
+) -> None:
+    record = _fixed_process_record_path(root, create_parent=False)
+    if not record.is_file():
+        return
+    payload = json.loads(record.read_text(encoding="utf-8-sig"))
+    command_digest = hashlib.sha256("\0".join(command).encode("utf-8")).hexdigest()
+    matches = (
+        isinstance(payload, dict)
+        and int(payload.get("schema_version") or 0) == 2
+        and int(payload.get("pid") or 0) == pid
+        and int(payload.get("port") or 0) == port
+        and str(payload.get("build_id") or "") == str(build_id)
+        and str(payload.get("command_sha256") or "").lower() == command_digest
+        and Path(str(payload.get("package_root") or "")).resolve(strict=False) == root
+        and Path(str(payload.get("executable_path") or "")).resolve(strict=False) == executable
+        and _same_process_creation_time(
+            str(payload.get("process_created_at") or ""), process_created_at
+        )
+    )
+    if not matches:
+        raise RuntimeError("rollback preserved a mismatched ownership record")
+    _delete_process_record(root, record)
+
+
 def _inspect_process(pid: int) -> dict[str, object] | None:
     if os.name != "nt":
         return None
@@ -408,6 +535,65 @@ def _terminate_process_tree(pid: int) -> None:
     )
     if completed.returncode not in (0, 128):
         raise RuntimeError(f"failed to terminate owned process {pid}: {completed.stderr.strip()}")
+
+
+def _descendant_process_ids(pid: int) -> set[int]:
+    """Return the live descendant PID tree rooted at an already authenticated process."""
+    if os.name != "nt":
+        return set()
+    query_pid = _validated_query_integer(pid, label="process ID", minimum=1, maximum=2**31 - 1)
+    environment = os.environ.copy()
+    environment["TTS_MORE_PORTABLE_QUERY_PID"] = str(query_pid)
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+            "$ErrorActionPreference='Stop';"
+            "$items=@(Get-CimInstance Win32_Process -ErrorAction Stop | "
+            "ForEach-Object {[ordered]@{pid=[int]$_.ProcessId;parent_pid=[int]$_.ParentProcessId}});"
+            "[ordered]@{processes=[object[]]$items}|ConvertTo-Json -Depth 3 -Compress",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    if completed.returncode != 0 or completed.stderr.strip() or not completed.stdout.strip():
+        raise RuntimeError("unable to verify descendant process ownership")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("unable to verify descendant process ownership") from exc
+    if not isinstance(payload, dict) or set(payload) != {"processes"} or not isinstance(
+        payload["processes"], list
+    ):
+        raise RuntimeError("unable to verify descendant process ownership")
+    children_by_parent: dict[int, set[int]] = {}
+    for item in payload["processes"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"pid", "parent_pid"}
+            or type(item["pid"]) is not int
+            or type(item["parent_pid"]) is not int
+            or item["pid"] <= 0
+            or item["parent_pid"] < 0
+        ):
+            raise RuntimeError("unable to verify descendant process ownership")
+        children_by_parent.setdefault(item["parent_pid"], set()).add(item["pid"])
+    descendants: set[int] = set()
+    pending = list(children_by_parent.get(query_pid, set()))
+    while pending:
+        child = pending.pop()
+        if child in descendants or child == query_pid:
+            continue
+        descendants.add(child)
+        pending.extend(children_by_parent.get(child, set()))
+    return descendants
 
 
 def _listener_pids_for_port(port: int) -> set[int]:
@@ -584,6 +770,15 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--executable", required=True, type=Path)
     verify.add_argument("--listener-pid", action="append", required=True, type=int)
     verify.add_argument("command_args", nargs=argparse.REMAINDER)
+    rollback = subcommands.add_parser("rollback-started-process")
+    rollback.add_argument("--package-root", required=True, type=Path)
+    rollback.add_argument("--pid", required=True, type=int)
+    rollback.add_argument("--parent-pid", required=True, type=int)
+    rollback.add_argument("--process-created-at", required=True)
+    rollback.add_argument("--executable", required=True, type=Path)
+    rollback.add_argument("--port", required=True, type=int)
+    rollback.add_argument("--build-id", required=True)
+    rollback.add_argument("command_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command == "prepare-runtime":
         print(prepare_runtime(args.package_root))
@@ -614,6 +809,17 @@ def main(argv: list[str] | None = None) -> int:
             command=_command_arguments(args.command_args),
             listener_pids=set(args.listener_pid),
         ) else 3
+    if args.command == "rollback-started-process":
+        return rollback_started_process(
+            args.package_root,
+            pid=args.pid,
+            parent_pid=args.parent_pid,
+            process_created_at=args.process_created_at,
+            executable_path=args.executable,
+            command=_command_arguments(args.command_args),
+            port=args.port,
+            build_id=args.build_id,
+        )
     raise AssertionError(f"unsupported command: {args.command}")
 
 

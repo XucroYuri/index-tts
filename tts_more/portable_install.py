@@ -252,15 +252,27 @@ def _download_http(
 
 
 def _open_http_response(url: str, resume_from: int) -> Any:
-    request = urllib.request.Request(url)
-    if resume_from:
-        request.add_header("Range", f"bytes={resume_from}-")
+    request = _http_request(url, resume_from)
     try:
         return urllib.request.urlopen(request, timeout=120)
     except urllib.error.HTTPError as error:
         if resume_from > 0 and error.code == 416:
             return error
         raise
+
+
+def _http_request(url: str, resume_from: int) -> urllib.request.Request:
+    request = urllib.request.Request(url)
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        str(parsed.hostname or "").lower() == "api.github.com"
+        and re.fullmatch(r"/repos/[^/]+/[^/]+/releases/assets/\d+", parsed.path)
+    ):
+        request.add_header("Accept", "application/octet-stream")
+        request.add_header("User-Agent", "tts-more-portable-installer")
+    if resume_from:
+        request.add_header("Range", f"bytes={resume_from}-")
+    return request
 
 
 def _write_http_response(

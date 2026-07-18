@@ -27,6 +27,19 @@ function Test-PortablePythonCancelled {
     return $CancelFile -and [System.IO.File]::Exists($CancelFile)
 }
 
+function Set-PortableDownloadHeaders {
+    param(
+        [Parameter(Mandatory = $true)][System.Net.Http.HttpRequestMessage]$Request,
+        [Parameter(Mandatory = $true)][string]$Url
+    )
+
+    $uri = [System.Uri]$Url
+    if ($uri.Host -ieq "api.github.com" -and $uri.AbsolutePath -match '^/repos/[^/]+/[^/]+/releases/assets/\d+$') {
+        $Request.Headers.Accept.ParseAdd("application/octet-stream")
+        $Request.Headers.UserAgent.ParseAdd("tts-more-portable-installer")
+    }
+}
+
 function Test-PortableLockedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -58,8 +71,18 @@ function Get-PortableLockedAsset {
     }
 
     $partial = "$Destination.partial"
-    if ([System.IO.File]::Exists($partial) -and (Get-Item -LiteralPath $partial).Length -gt [int64]$Asset.size_bytes) {
-        Remove-Item -LiteralPath $partial -Force
+    if ([System.IO.File]::Exists($partial)) {
+        $partialLength = (Get-Item -LiteralPath $partial).Length
+        if ($partialLength -eq [int64]$Asset.size_bytes) {
+            if (Test-PortableLockedFile -Path $partial -Asset $Asset) {
+                [System.IO.File]::Move($partial, $Destination)
+                return $Destination
+            }
+            Remove-Item -LiteralPath $partial -Force
+        }
+        elseif ($partialLength -gt [int64]$Asset.size_bytes) {
+            Remove-Item -LiteralPath $partial -Force
+        }
     }
     $errors = New-Object System.Collections.Generic.List[string]
     foreach ($url in @($Asset.urls)) {
@@ -73,6 +96,7 @@ function Get-PortableLockedAsset {
         $attempt = $null
         try {
             $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, [string]$url)
+            Set-PortableDownloadHeaders -Request $request -Url ([string]$url)
             if ($resumeFrom -gt 0) {
                 $request.Headers.Range = "bytes=$resumeFrom-"
             }

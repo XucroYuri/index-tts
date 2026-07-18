@@ -19,6 +19,7 @@ $Root = $paths.PackageRoot
 $SourceRoot = $paths.SourceRoot
 $config = $paths.Config
 $env:PYTHONPATH = $SourceRoot
+$env:TTS_MORE_PACKAGE_ROOT = $Root
 $Port = if ($null -ne $PortOverride) { [int]$PortOverride } elseif ($env:TTS_MORE_PORT) { [int]$env:TTS_MORE_PORT } else { [int]$config.port }
 $Python = Join-Path $Root "runtime\live\python.exe"
 $RuntimeLock = Get-Content -LiteralPath (Join-Path $Bundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
@@ -42,7 +43,7 @@ if ($listeners.Count -gt 0) {
     if ($owned) {
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 2
-            if ($health) { Write-Host "$($config.component) ready: http://127.0.0.1:$Port"; exit 0 }
+            if ($health.ready -eq $true) { Write-Host "$($config.component) ready: http://127.0.0.1:$Port"; exit 0 }
         } catch { }
     }
     throw "PORT_IN_USE: worker port $Port is occupied by $($owners | ConvertTo-Json -Compress). No process was terminated."
@@ -52,16 +53,33 @@ switch ([string]$config.component) {
     "indextts" { $env:TTS_MORE_INDEXTTS_REPO = $SourceRoot; $env:TTS_MORE_INDEXTTS_PYTHON = $Python }
     "cosyvoice" { $env:TTS_MORE_COSYVOICE_REPO = $SourceRoot; $env:TTS_MORE_COSYVOICE_MODEL_DIR = (Join-Path $SourceRoot "pretrained_models\CosyVoice-300M") }
 }
-$process = Start-Process -FilePath $Python -ArgumentList $arguments -WorkingDirectory $SourceRoot -WindowStyle Hidden -PassThru
-$created = $process.StartTime.ToUniversalTime().ToString("o")
-& $Python $Launcher write-process-record --package-root $Root --record-path $recordPath --pid $process.Id --parent-pid $PID --process-created-at $created --executable $Python --port $Port --build-id $buildId -- @arguments
-if ($LASTEXITCODE -ne 0) { throw "failed to write worker ownership record" }
-$deadline = [DateTime]::UtcNow.AddSeconds(120)
-do {
-    if ($process.HasExited) { throw "worker exited during startup with code $($process.ExitCode)" }
-    try {
-        $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3
-        if ($null -ne $health.ready) { Write-Host "$($config.component) worker ready: http://127.0.0.1:$Port"; exit 0 }
-    } catch { Start-Sleep -Milliseconds 500 }
-} while ([DateTime]::UtcNow -lt $deadline)
-throw "worker health endpoint did not respond within 120 seconds"
+$process = $null
+$created = ""
+try {
+    $process = Start-Process -FilePath $Python -ArgumentList $arguments -WorkingDirectory $SourceRoot -WindowStyle Hidden -PassThru
+    $created = $process.StartTime.ToUniversalTime().ToString("o")
+    & $Python $Launcher write-process-record --package-root $Root --record-path $recordPath --pid $process.Id --parent-pid $PID --process-created-at $created --executable $Python --port $Port --build-id $buildId -- @arguments
+    if ($LASTEXITCODE -ne 0) { throw "failed to write worker ownership record" }
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    do {
+        if ($process.HasExited) { throw "worker exited during startup with code $($process.ExitCode)" }
+        try {
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3
+            if ($health.ready -eq $true) { Write-Host "$($config.component) worker ready: http://127.0.0.1:$Port"; exit 0 }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "worker health endpoint did not report ready=true within 120 seconds"
+} catch {
+    $startupFailure = $_.Exception.Message
+    if ($null -ne $process -and ![string]::IsNullOrWhiteSpace($created)) {
+        $rollbackArguments = @($Launcher, "rollback-started-process", "--package-root", $Root, "--pid", [string]$process.Id, "--parent-pid", [string]$PID, "--process-created-at", $created, "--executable", $Python, "--port", [string]$Port, "--build-id", $buildId, "--") + $arguments
+        $rollbackOutput = @(& $Python @rollbackArguments 2>&1) -join [Environment]::NewLine
+        $rollbackExitCode = $LASTEXITCODE
+        if ($rollbackExitCode -ne 0) {
+            throw "$startupFailure Rollback failed with exit code $rollbackExitCode. Evidence: $rollbackOutput"
+        }
+        throw "$startupFailure Startup process rollback completed."
+    }
+    throw
+}

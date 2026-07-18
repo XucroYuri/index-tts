@@ -39,7 +39,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 # The standard worker request schemas.
 from app.workers.artifacts import ArtifactStore, artifact_output, artifact_response, register_artifact_routes
@@ -76,7 +76,17 @@ def _bootstrap_repo() -> None:
     # imports (``AR``, ``TTS_infer_pack``, ``config``).  Both directories must
     # therefore be present; deriving them from REPO_DIR avoids machine-specific
     # PYTHONPATH configuration.
-    ffmpeg_bin = REPO_DIR / "ffmpeg-shared" / "bin"
+    configured_package_root = os.environ.get("TTS_MORE_PACKAGE_ROOT")
+    packaged_ffmpeg_bin = (
+        Path(configured_package_root).resolve(strict=False) / "ffmpeg-shared" / "bin"
+        if configured_package_root
+        else None
+    )
+    ffmpeg_bin = (
+        packaged_ffmpeg_bin
+        if packaged_ffmpeg_bin is not None and packaged_ffmpeg_bin.is_dir()
+        else REPO_DIR / "ffmpeg-shared" / "bin"
+    )
     if ffmpeg_bin.is_dir():
         ffmpeg_str = str(ffmpeg_bin)
         path_entries = os.environ.get("PATH", "").split(os.pathsep)
@@ -253,8 +263,13 @@ def load(request: LoadRequest) -> dict[str, Any]:
 
 @app.post("/synthesize")
 def synthesize(request: SynthesizeRequest) -> dict[str, Any]:
-    pipeline = _ensure_pipeline()
     params = request.parameters or {}
+    media_type = str(params.get("media_type", "wav")).strip().casefold()
+    if media_type != "wav":
+        raise HTTPException(status_code=400, detail="GPT-SoVITS worker supports WAV output only")
+    if request.delivery == "path" and request.output_path.suffix.casefold() != ".wav":
+        raise HTTPException(status_code=400, detail="GPT-SoVITS path delivery requires a .wav output path")
+    pipeline = _ensure_pipeline()
     inputs: dict[str, Any] = {
         "text": request.line.text,
         "text_lang": params.get("text_lang", "zh"),
@@ -263,7 +278,7 @@ def synthesize(request: SynthesizeRequest) -> dict[str, Any]:
         "prompt_lang": params.get("prompt_lang", "zh"),
         "text_split_method": params.get("text_split_method", "cut1"),
         "speed_factor": params.get("speed_factor", 1.0),
-        "media_type": params.get("media_type", "wav"),
+        "media_type": media_type,
         "streaming_mode": False,
         "return_fragment": True,
     }

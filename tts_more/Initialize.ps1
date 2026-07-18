@@ -171,7 +171,10 @@ if ($lockedAssetsComplete -and $runtimeComplete) {
     $modelSha = Get-PortableFileSha256 -Path $modelLockPath
     & (Join-Path $live "python.exe") (Join-Path $Bundle "portable_install.py") write-state --path $state --component ([string]$config.component) --build-id $buildId --profile $selectedProfile --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
     if ($LASTEXITCODE -ne 0) { throw "failed to repair stale install-state.json" }
-    if (!(Test-PortableInstallStateComplete -Root $Root -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets)) { throw "repaired install-state.json failed complete validation" }
+    $repairedStateComplete = Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
+        Test-PortableInstallStateComplete -Root $Root -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets
+    }
+    if (!$repairedStateComplete) { throw "repaired install-state.json failed complete validation" }
     Write-Host "verified package-private assets and repaired stale install state"
     exit 0
 }

@@ -391,12 +391,21 @@ function Remove-WorkerOwnedDirectoryContents {
         [switch]$AllowMissing
     )
 
+    $enumerationPath = [IO.Path]::GetFullPath($Path)
+    if (!$enumerationPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+        if ($enumerationPath.StartsWith("\\", [StringComparison]::Ordinal)) {
+            $enumerationPath = "\\?\UNC\" + $enumerationPath.Substring(2)
+        }
+        else {
+            $enumerationPath = "\\?\" + $enumerationPath
+        }
+    }
     $maximumPasses = 8
     for ($pass = 0; $pass -lt $maximumPasses; $pass++) {
-        try { $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
+        try { $children = @(Get-ChildItem -LiteralPath $enumerationPath -Force -ErrorAction Stop) }
         catch {
             if (Test-WorkerOwnedMissingPathFailure -Failure $_) {
-                if ($AllowMissing -and ![IO.Directory]::Exists($Path)) { return }
+                if ($AllowMissing -and ![IO.Directory]::Exists($enumerationPath)) { return }
                 if ($pass -lt ($maximumPasses - 1)) { continue }
             }
             throw
@@ -406,16 +415,25 @@ function Remove-WorkerOwnedDirectoryContents {
         foreach ($child in $children) {
             try {
                 $childPath = $child.FullName
-                $childAttributes = [IO.File]::GetAttributes($childPath)
+                $childIoPath = [IO.Path]::GetFullPath($childPath)
+                if (!$childIoPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+                    if ($childIoPath.StartsWith("\\", [StringComparison]::Ordinal)) {
+                        $childIoPath = "\\?\UNC\" + $childIoPath.Substring(2)
+                    }
+                    else {
+                        $childIoPath = "\\?\" + $childIoPath
+                    }
+                }
+                $childAttributes = [IO.File]::GetAttributes($childIoPath)
                 if (($childAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw "refusing to clean a worker-owned directory containing a reparse point: $childPath"
                 }
                 if (($childAttributes -band [IO.FileAttributes]::Directory) -ne 0) {
                     Remove-WorkerOwnedDirectoryContents -Path $childPath -AllowMissing
-                    [IO.Directory]::Delete($childPath, $false)
+                    [IO.Directory]::Delete($childIoPath, $false)
                 }
                 else {
-                    [IO.File]::Delete($childPath)
+                    [IO.File]::Delete($childIoPath)
                 }
             }
             catch {
@@ -425,12 +443,12 @@ function Remove-WorkerOwnedDirectoryContents {
         }
     }
 
-    try { $remainingChildren = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
+    try { $remainingChildren = @(Get-ChildItem -LiteralPath $enumerationPath -Force -ErrorAction Stop) }
     catch {
         if (
             (Test-WorkerOwnedMissingPathFailure -Failure $_) -and
             $AllowMissing -and
-            ![IO.Directory]::Exists($Path)
+            ![IO.Directory]::Exists($enumerationPath)
         ) {
             return
         }
@@ -438,6 +456,24 @@ function Remove-WorkerOwnedDirectoryContents {
     }
     if ($remainingChildren.Count -eq 0) { return }
     throw "worker-owned directory remained non-empty after $maximumPasses cleanup passes: $Path"
+}
+
+function Complete-WorkerPackageBuildOutcome {
+    param(
+        [AllowNull()][Management.Automation.ErrorRecord]$WorkerBuildFailure,
+        [AllowNull()][Management.Automation.ErrorRecord]$WorkerCleanupFailure
+    )
+
+    if ($null -ne $WorkerBuildFailure) {
+        if ($null -ne $WorkerCleanupFailure) {
+            throw [InvalidOperationException]::new(
+                "worker package build failed: $($WorkerBuildFailure.Exception.Message); worker package staging cleanup also failed: $($WorkerCleanupFailure.Exception.Message)",
+                $WorkerBuildFailure.Exception
+            )
+        }
+        throw $WorkerBuildFailure
+    }
+    if ($null -ne $WorkerCleanupFailure) { throw $WorkerCleanupFailure }
 }
 
 $Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)
@@ -593,10 +629,19 @@ function Remove-WorkerFullRuntimeBytecode {
     $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot "runtime\live"))
     foreach ($directory in @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force | Where-Object { $_.Name -eq "__pycache__" } | Sort-Object FullName -Descending)) {
         try {
-            $directoryAttributes = [IO.File]::GetAttributes($directory.FullName)
+            $directoryIoPath = [IO.Path]::GetFullPath($directory.FullName)
+            if (!$directoryIoPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+                if ($directoryIoPath.StartsWith("\\", [StringComparison]::Ordinal)) {
+                    $directoryIoPath = "\\?\UNC\" + $directoryIoPath.Substring(2)
+                }
+                else {
+                    $directoryIoPath = "\\?\" + $directoryIoPath
+                }
+            }
+            $directoryAttributes = [IO.File]::GetAttributes($directoryIoPath)
             if (($directoryAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
             Remove-WorkerOwnedDirectoryContents -Path $directory.FullName -AllowMissing
-            [IO.Directory]::Delete($directory.FullName, $false)
+            [IO.Directory]::Delete($directoryIoPath, $false)
         }
         catch {
             if (Test-WorkerOwnedMissingPathFailure -Failure $_) { continue }
@@ -605,9 +650,18 @@ function Remove-WorkerFullRuntimeBytecode {
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Force -Filter "*.pyc")) {
         try {
-            $fileAttributes = [IO.File]::GetAttributes($file.FullName)
+            $fileIoPath = [IO.Path]::GetFullPath($file.FullName)
+            if (!$fileIoPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+                if ($fileIoPath.StartsWith("\\", [StringComparison]::Ordinal)) {
+                    $fileIoPath = "\\?\UNC\" + $fileIoPath.Substring(2)
+                }
+                else {
+                    $fileIoPath = "\\?\" + $fileIoPath
+                }
+            }
+            $fileAttributes = [IO.File]::GetAttributes($fileIoPath)
             if (($fileAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
-            [IO.File]::Delete($file.FullName)
+            [IO.File]::Delete($fileIoPath)
         }
         catch {
             if (Test-WorkerOwnedMissingPathFailure -Failure $_) { continue }
@@ -706,6 +760,8 @@ $isolatedUvCacheLeaf = ""
 $isolatedUvCacheHandle = $null
 $isolatedUvCacheIdentity = $null
 $isolatedUvCacheCreated = $false
+$workerBuildFailure = $null
+$workerCleanupFailure = $null
 try {
 New-Item -ItemType Directory -Force -Path $workBase | Out-Null
 [void](Assert-PortableWorkPath -CandidatePath $workBase)
@@ -982,33 +1038,38 @@ if ($Profile -eq "Full") {
 $acceptance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$zip.acceptance.json" -Encoding UTF8
 Write-Host "Created $Profile package: $zip"
 }
+catch { $workerBuildFailure = $_ }
 finally {
     try {
-        if ($workCreated) {
-            $workPathExists = Assert-PortableWorkPath -CandidatePath $work
-            if (!$workPathExists) {
-                throw "worker package cleanup path disappeared after creation; refusing path-based cleanup: $work"
+        try {
+            if ($workCreated) {
+                $workPathExists = Assert-PortableWorkPath -CandidatePath $work
+                if (!$workPathExists) {
+                    throw "worker package cleanup path disappeared after creation; refusing path-based cleanup: $work"
+                }
+                $resolvedWork = [IO.Path]::GetFullPath($work)
+                $resolvedWorkParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedWork))
+                $resolvedWorkLeaf = Split-Path -Leaf $resolvedWork
+                if (![string]::Equals($resolvedWorkParent.TrimEnd("\", "/"), $workBase.TrimEnd("\", "/"), [StringComparison]::OrdinalIgnoreCase) -or $resolvedWorkLeaf -ne $workIdentity) {
+                    throw "refusing to clean a worker package staging directory that is not the unique directory created by this build: $resolvedWork"
+                }
+                $cleanupIdentity = [TtsMorePortableDirectoryHandle]::Identity($createdWorkHandle)
+                if (![string]::Equals($cleanupIdentity, $createdWorkIdentity, [StringComparison]::Ordinal)) {
+                    throw "worker package staging handle identity changed unexpectedly: $resolvedWork"
+                }
+                Remove-WorkerOwnedDirectoryContents -Path $resolvedWork
+                [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($createdWorkHandle)
+                $createdWorkHandle.Dispose()
+                $createdWorkHandle = $null
+                $workCreated = $false
             }
-            $resolvedWork = [IO.Path]::GetFullPath($work)
-            $resolvedWorkParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedWork))
-            $resolvedWorkLeaf = Split-Path -Leaf $resolvedWork
-            if (![string]::Equals($resolvedWorkParent.TrimEnd("\", "/"), $workBase.TrimEnd("\", "/"), [StringComparison]::OrdinalIgnoreCase) -or $resolvedWorkLeaf -ne $workIdentity) {
-                throw "refusing to clean a worker package staging directory that is not the unique directory created by this build: $resolvedWork"
-            }
-            $cleanupIdentity = [TtsMorePortableDirectoryHandle]::Identity($createdWorkHandle)
-            if (![string]::Equals($cleanupIdentity, $createdWorkIdentity, [StringComparison]::Ordinal)) {
-                throw "worker package staging handle identity changed unexpectedly: $resolvedWork"
-            }
-            Remove-WorkerOwnedDirectoryContents -Path $resolvedWork
-            [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($createdWorkHandle)
-            $createdWorkHandle.Dispose()
-            $createdWorkHandle = $null
-            $workCreated = $false
+        }
+        finally {
+            if ($isolatedUvCacheHandle -ne $null) { $isolatedUvCacheHandle.Dispose() }
+            if ($createdWorkHandle -ne $null) { $createdWorkHandle.Dispose() }
+            if ($workBaseHandle -ne $null) { $workBaseHandle.Dispose() }
         }
     }
-    finally {
-        if ($isolatedUvCacheHandle -ne $null) { $isolatedUvCacheHandle.Dispose() }
-        if ($createdWorkHandle -ne $null) { $createdWorkHandle.Dispose() }
-        if ($workBaseHandle -ne $null) { $workBaseHandle.Dispose() }
-    }
+    catch { $workerCleanupFailure = $_ }
 }
+Complete-WorkerPackageBuildOutcome -WorkerBuildFailure $workerBuildFailure -WorkerCleanupFailure $workerCleanupFailure

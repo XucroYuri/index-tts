@@ -4,6 +4,21 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.Net.Http
 
+if (!("TtsMore.PortablePython.NativeMethods" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace TtsMore.PortablePython {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CreateDirectory(string path, IntPtr securityAttributes);
+    }
+}
+'@
+}
+
 function Get-PortablePythonFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -42,6 +57,24 @@ function New-PortableOwnedSiblingPath {
     finally { $generator.Dispose() }
     $nonce = ([System.BitConverter]::ToString($nonceBytes)).Replace('-', '').ToLowerInvariant()
     return Join-Path $parent ".$Prefix-$nonce"
+}
+
+function New-PortableOwnedDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][ValidateSet('px')][string]$Prefix
+    )
+
+    for ($attempt = 0; $attempt -lt 128; $attempt++) {
+        $candidate = New-PortableOwnedSiblingPath -Destination $Destination -Prefix $Prefix
+        if ([TtsMore.PortablePython.NativeMethods]::CreateDirectory($candidate, [System.IntPtr]::Zero)) {
+            return $candidate
+        }
+        $errorCode = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errorCode -eq 183 -or $errorCode -eq 80) { continue }
+        throw (New-Object System.ComponentModel.Win32Exception($errorCode, "failed to claim portable directory: $candidate"))
+    }
+    throw "failed to claim a unique portable directory after 128 attempts"
 }
 
 function Set-PortableDownloadHeaders {
@@ -216,10 +249,12 @@ function Expand-PortablePythonArchive {
     }
     $parent = [System.IO.Path]::GetDirectoryName($Destination)
     [System.IO.Directory]::CreateDirectory($parent) | Out-Null
-    $temporary = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'px'
-    [System.IO.Directory]::CreateDirectory($temporary) | Out-Null
+    $temporary = $null
+    $temporaryOwned = $false
     $zip = $null
     try {
+        $temporary = New-PortableOwnedDirectory -Destination $Destination -Prefix 'px'
+        $temporaryOwned = $true
         $zip = [System.IO.Compression.ZipFile]::OpenRead([System.IO.Path]::GetFullPath($Archive))
         $targets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         $pthEntries = New-Object System.Collections.Generic.List[string]
@@ -275,14 +310,39 @@ function Expand-PortablePythonArchive {
         )
         [System.IO.Directory]::CreateDirectory((Join-Path $temporary 'Lib\site-packages')) | Out-Null
         [System.IO.Directory]::Move($temporary, $Destination)
+        $temporaryOwned = $false
     }
     catch {
-        if ([System.IO.Directory]::Exists($temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+        if ($temporaryOwned -and [System.IO.Directory]::Exists($temporary)) {
+            Remove-Item -LiteralPath $temporary -Recurse -Force
+        }
         throw
     }
     finally {
         if ($zip) { $zip.Dispose() }
     }
+}
+
+function New-PortableExpandedPythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+
+    for ($attempt = 0; $attempt -lt 128; $attempt++) {
+        $candidate = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pi'
+        if ([System.IO.Directory]::Exists($candidate) -or [System.IO.File]::Exists($candidate)) { continue }
+        try {
+            Expand-PortablePythonArchive -Archive $Archive -Destination $candidate -ExpectedVersion $ExpectedVersion
+            return $candidate
+        }
+        catch {
+            if ([System.IO.Directory]::Exists($candidate) -or [System.IO.File]::Exists($candidate)) { continue }
+            throw
+        }
+    }
+    throw "failed to claim a unique portable install candidate after 128 attempts"
 }
 
 function Export-PortableUvExecutable {
@@ -300,34 +360,62 @@ function Export-PortableUvExecutable {
         $matches = @($zip.Entries | Where-Object { $_.FullName -ceq $ArchiveEntry })
         if ($matches.Count -ne 1) { throw "uv wheel must contain exactly one declared entry: $ArchiveEntry" }
         [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($Destination)) | Out-Null
-        $temporary = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pu'
+        $temporary = $null
+        $temporaryOwned = $false
         try {
+            $output = $null
+            for ($attempt = 0; $attempt -lt 128; $attempt++) {
+                $proposed = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pu'
+                try {
+                    $output = New-Object System.IO.FileStream($proposed, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                    $temporary = $proposed
+                    $temporaryOwned = $true
+                    break
+                }
+                catch {
+                    if ([System.IO.File]::Exists($proposed) -or [System.IO.Directory]::Exists($proposed)) { continue }
+                    throw
+                }
+            }
+            if (!$temporaryOwned) { throw "failed to claim a unique portable uv temporary file after 128 attempts" }
             $input = $matches[0].Open()
-            $output = New-Object System.IO.FileStream($temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
             try { $input.CopyTo($output); $output.Flush($true) } finally { $output.Dispose(); $input.Dispose() }
             if ([System.IO.File]::Exists($Destination)) {
                 $sameLength = (Get-Item -LiteralPath $temporary).Length -eq (Get-Item -LiteralPath $Destination).Length
                 $sameSha = $sameLength -and (Get-PortablePythonFileSha256 -Path $temporary) -eq (Get-PortablePythonFileSha256 -Path $Destination)
                 if ($sameSha) {
                     Remove-Item -LiteralPath $temporary -Force
+                    $temporaryOwned = $false
                 }
                 else {
-                    $backup = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pb'
+                    $backup = $null
+                    $backupOwned = $false
                     try {
+                        for ($attempt = 0; $attempt -lt 128; $attempt++) {
+                            $proposedBackup = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pb'
+                            if ([System.IO.File]::Exists($proposedBackup) -or [System.IO.Directory]::Exists($proposedBackup)) { continue }
+                            $backup = $proposedBackup
+                            break
+                        }
+                        if (!$backup) { throw "failed to choose a unique portable uv backup after 128 attempts" }
                         [System.IO.File]::Replace($temporary, $Destination, $backup, $true)
+                        $temporaryOwned = $false
+                        $backupOwned = $true
                         Remove-Item -LiteralPath $backup -Force
+                        $backupOwned = $false
                     }
                     finally {
-                        if ([System.IO.File]::Exists($backup)) { Remove-Item -LiteralPath $backup -Force }
+                        if ($backupOwned -and [System.IO.File]::Exists($backup)) { Remove-Item -LiteralPath $backup -Force }
                     }
                 }
             }
             else {
                 [System.IO.File]::Move($temporary, $Destination)
+                $temporaryOwned = $false
             }
         }
         catch {
-            if ([System.IO.File]::Exists($temporary)) { Remove-Item -LiteralPath $temporary -Force }
+            if ($temporaryOwned -and [System.IO.File]::Exists($temporary)) { Remove-Item -LiteralPath $temporary -Force }
             throw
         }
     }
@@ -372,9 +460,11 @@ function Install-PortablePythonRuntime {
 
     $destinationParent = [System.IO.Path]::GetDirectoryName($Destination)
     [System.IO.Directory]::CreateDirectory($destinationParent) | Out-Null
-    $candidate = New-PortableOwnedSiblingPath -Destination $Destination -Prefix 'pi'
+    $candidate = $null
+    $candidateOwned = $false
     try {
-        Expand-PortablePythonArchive -Archive $pythonArchive -Destination $candidate -ExpectedVersion ([string]$lock.python_version)
+        $candidate = New-PortableExpandedPythonCandidate -Archive $pythonArchive -Destination $Destination -ExpectedVersion ([string]$lock.python_version)
+        $candidateOwned = $true
         $candidatePython = Join-Path $candidate ([string]$lock.assets.python.archive_entry)
         if (![System.IO.File]::Exists($candidatePython)) { throw "Python archive entry is missing after extraction" }
         $actualVersion = (& $candidatePython -c "import platform; print(platform.python_version())" 2>&1 | Out-String).Trim()
@@ -401,6 +491,7 @@ function Install-PortablePythonRuntime {
         $uvPath = Join-Path $cache ("tools\uv-$($Matches[1])\uv.exe")
         Export-PortableUvExecutable -Wheel $uvWheel -ArchiveEntry $uvEntry -Destination $uvPath
         [System.IO.Directory]::Move($candidate, $Destination)
+        $candidateOwned = $false
         return [pscustomobject]@{
             Python = [System.IO.Path]::GetFullPath((Join-Path $Destination ([string]$lock.assets.python.archive_entry)))
             Uv = [System.IO.Path]::GetFullPath($uvPath)
@@ -408,7 +499,9 @@ function Install-PortablePythonRuntime {
         }
     }
     catch {
-        if ([System.IO.Directory]::Exists($candidate)) { Remove-Item -LiteralPath $candidate -Recurse -Force }
+        if ($candidateOwned -and [System.IO.Directory]::Exists($candidate)) {
+            Remove-Item -LiteralPath $candidate -Recurse -Force
+        }
         throw
     }
 }

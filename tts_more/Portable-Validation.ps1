@@ -241,6 +241,7 @@ function Assert-PortableExactOperationContract {
 function Assert-PortableRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
         [Parameter(Mandatory = $true)][string]$PythonPath,
         [Parameter(Mandatory = $true)][string]$ExpectedVersion,
         [string]$ImportProbe = "import sys"
@@ -266,23 +267,76 @@ function Assert-PortableRuntime {
         throw "package runtime Python version must be $ExpectedVersion"
     }
     if (![string]::IsNullOrWhiteSpace($ImportProbe)) {
-        [void](Assert-PortablePackageRoot -Root $resolvedRoot)
-        [void](Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $relative -Label "package runtime" -MustExist)
-        & $resolvedPython -c $ImportProbe *> $null
-        if ($LASTEXITCODE -ne 0) { throw "package runtime import probe failed" }
+        Invoke-PortablePythonSourceProbe -Root $resolvedRoot -SourceRoot $SourceRoot -PythonPath $resolvedPython -ImportProbe $ImportProbe
     }
     return $resolvedPython
+}
+
+function Invoke-PortablePythonSourceProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$PythonPath,
+        [Parameter(Mandatory = $true)][string]$ImportProbe,
+        [string]$RuntimeRoot = ""
+    )
+    $resolvedRoot = Assert-PortablePackageRoot -Root $Root
+    $resolvedRuntimeRoot = if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
+        $resolvedRoot
+    } else {
+        Assert-PortablePackageRoot -Root $RuntimeRoot
+    }
+    $resolvedPython = [IO.Path]::GetFullPath($PythonPath)
+    if (!(Test-PortablePathWithinRoot -Root $resolvedRuntimeRoot -Path $resolvedPython)) {
+        throw "source probe Python must be inside its runtime root"
+    }
+    $pythonRelative = $resolvedPython.Substring($resolvedRuntimeRoot.Length).TrimStart('\', '/')
+    [void](Resolve-PortablePackagePath -Root $resolvedRuntimeRoot -RelativePath $pythonRelative -Label "source probe Python" -MustExist)
+    if (!(Test-Path -LiteralPath $resolvedPython -PathType Leaf)) { throw "source probe Python is missing" }
+
+    $resolvedSourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+    if (!(Test-PortablePathWithinRoot -Root $resolvedRoot -Path $resolvedSourceRoot)) {
+        throw "runtime source root must be inside the package"
+    }
+    $sourceRelative = if ([string]::Equals($resolvedSourceRoot, $resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        "."
+    } else {
+        $resolvedSourceRoot.Substring($resolvedRoot.Length).TrimStart('\', '/')
+    }
+    $resolvedSourceRoot = Resolve-PortablePackagePath -Root $resolvedRoot -RelativePath $sourceRelative -Label "runtime source root" -MustExist
+    if (!(Test-Path -LiteralPath $resolvedSourceRoot -PathType Container)) { throw "runtime source root is missing" }
+    if ([string]::IsNullOrWhiteSpace($ImportProbe)) { return }
+
+    $bootstrap = "import os,sys; source_root=os.path.abspath(sys.argv[1]); os.chdir(source_root); sys.path.insert(0,source_root); exec(compile(sys.argv[2],'<portable-import-probe>','exec'),{'__name__':'__main__'})"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $probeOutput = @()
+    $probeExitCode = -1
+    try {
+        $ErrorActionPreference = "Continue"
+        $probeOutput = @(& $resolvedPython -c $bootstrap $resolvedSourceRoot $ImportProbe 2>&1)
+        $probeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($probeExitCode -ne 0) {
+        $detail = (@($probeOutput | ForEach-Object { [string]$_ } | Select-Object -First 8) -join [Environment]::NewLine).Trim()
+        if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + "... [truncated]" }
+        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = "no diagnostic output" }
+        throw "package runtime import probe failed: $detail"
+    }
 }
 
 function Test-PortableRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
         [Parameter(Mandatory = $true)][string]$PythonPath,
         [Parameter(Mandatory = $true)][string]$ExpectedVersion,
         [string]$ImportProbe = "import sys"
     )
     try {
-        [void](Assert-PortableRuntime -Root $Root -PythonPath $PythonPath -ExpectedVersion $ExpectedVersion -ImportProbe $ImportProbe)
+        [void](Assert-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath $PythonPath -ExpectedVersion $ExpectedVersion -ImportProbe $ImportProbe)
         return $true
     } catch { return $false }
 }
@@ -395,6 +449,7 @@ function Get-PortableIntegrityCoverage {
 function Test-PortableInstallStateComplete {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
         [Parameter(Mandatory = $true)][string]$StatePath,
         [Parameter(Mandatory = $true)][string]$Component,
         [Parameter(Mandatory = $true)][string]$BuildId,
@@ -434,7 +489,7 @@ function Test-PortableInstallStateComplete {
             }
             if (!(Test-PortableLockedAssets -Root $Root -ModelLock $ModelLock)) { return $false }
         }
-        if (!(Test-PortableRuntime -Root $Root -PythonPath $python -ExpectedVersion $ExpectedPython -ImportProbe $ImportProbe)) { return $false }
+        if (!(Test-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath $python -ExpectedVersion $ExpectedPython -ImportProbe $ImportProbe)) { return $false }
         return $true
     } catch { return $false }
 }

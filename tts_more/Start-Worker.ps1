@@ -18,14 +18,13 @@ $Bundle = $paths.BundleRoot
 $Root = $paths.PackageRoot
 $SourceRoot = $paths.SourceRoot
 $config = $paths.Config
-$env:PYTHONPATH = $SourceRoot
 $env:TTS_MORE_PACKAGE_ROOT = $Root
 $Port = if ($null -ne $PortOverride) { [int]$PortOverride } elseif ($env:TTS_MORE_PORT) { [int]$env:TTS_MORE_PORT } else { [int]$config.port }
 $Python = Join-Path $Root "runtime\live\python.exe"
 $RuntimeLock = Get-Content -LiteralPath (Join-Path $Bundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
 $ExpectedPython = if ([string]::IsNullOrWhiteSpace([string]$RuntimeLock.python_version)) { [string]$config.python } else { [string]$RuntimeLock.python_version }
 $ImportProbe = if ($RuntimeLock.PSObject.Properties["import_probe"] -and ![string]::IsNullOrWhiteSpace([string]$RuntimeLock.import_probe)) { [string]$RuntimeLock.import_probe } else { [string]$config.import_probe }
-[void](Assert-PortableRuntime -Root $Root -PythonPath $Python -ExpectedVersion $ExpectedPython -ImportProbe $ImportProbe)
+[void](Assert-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath $Python -ExpectedVersion $ExpectedPython -ImportProbe $ImportProbe)
 $manifestPath = Join-Path $Root "package\tts-more-package.json"
 $buildId = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [string](Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).build_id } else { "source-checkout" }
 $arguments = @("-m", "uvicorn", [string]$config.module, "--app-dir", $Bundle, "--host", "127.0.0.1", "--port", [string]$Port)

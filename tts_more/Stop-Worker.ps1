@@ -43,6 +43,7 @@ if (!(Test-Path -LiteralPath $PathsScript -PathType Leaf)) { throw "Portable-Pat
 $paths = Get-PortableWorkerPaths -BundleRoot $Bundle -PackageRoot $candidateRoot
 $Bundle = $paths.BundleRoot
 $Root = $paths.PackageRoot
+$SourceRoot = $paths.SourceRoot
 $Root = Assert-PortablePackageRootChain -Root $Root
 $ValidationScript = Join-Path $Bundle "Portable-Validation.ps1"
 if (!(Test-Path -LiteralPath $ValidationScript -PathType Leaf)) { throw "Portable-Validation.ps1 is missing" }
@@ -56,7 +57,7 @@ $runtimeLock = Get-Content -LiteralPath $runtimeLockPath -Raw | ConvertFrom-Json
 $expectedPython = [string]$runtimeLock.python_version
 if ($expectedPython -notin @("3.10", "3.10.11", "3.11", "3.11.9")) { throw "worker runtime lock has an unsupported Python version" }
 $Python = Join-Path $Root "runtime\live\python.exe"
-[void](Assert-PortableRuntime -Root $Root -PythonPath $Python -ExpectedVersion $expectedPython -ImportProbe "")
+[void](Assert-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath $Python -ExpectedVersion $expectedPython -ImportProbe "")
 $launcherRelative = (Join-Path $Bundle "portable_launcher.py").Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
 $Launcher = Resolve-PortablePackagePath -Root $Root -RelativePath $launcherRelative -Label "portable launcher" -MustExist
 & $Python $Launcher stop-worker --package-root $Root

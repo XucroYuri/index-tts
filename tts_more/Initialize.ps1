@@ -31,24 +31,6 @@ $live = Join-Path $Root "runtime\live"
 $staging = Join-Path $Root "runtime\staging"
 $state = Join-Path $Root "data\local\install-state.json"
 
-function Invoke-PortableWorkerSourceContext {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceRoot,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
-    )
-    $resolvedSourceRoot = [IO.Path]::GetFullPath($SourceRoot)
-    $previousPythonPath = [Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
-    Push-Location -LiteralPath $resolvedSourceRoot
-    try {
-        [Environment]::SetEnvironmentVariable("PYTHONPATH", $resolvedSourceRoot, "Process")
-        & $Action
-    }
-    finally {
-        [Environment]::SetEnvironmentVariable("PYTHONPATH", $previousPythonPath, "Process")
-        Pop-Location
-    }
-}
-
 function Repair-PortableWorkerStaleState {
     param(
         [Parameter(Mandatory = $true)][string]$SourceRoot,
@@ -71,9 +53,7 @@ function Repair-PortableWorkerStaleState {
     $modelSha = Get-PortableFileSha256 -Path $ModelLockPath
     & (Join-Path $LivePath "python.exe") (Join-Path $BundleRoot "portable_install.py") write-state --path $StatePath --component $Component --build-id $BuildId --profile $selectedProfile --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
     if ($LASTEXITCODE -ne 0) { throw "failed to repair stale install-state.json" }
-    $repairedStateComplete = Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-        Test-PortableInstallStateComplete -Root $Root -StatePath $StatePath -Component $Component -BuildId $BuildId -RuntimeLock $RuntimeLockPath -ModelLock $ModelLockPath -ExpectedPython $ExpectedPython -ImportProbe $ImportProbe -ValidateAssets
-    }
+    $repairedStateComplete = Test-PortableInstallStateComplete -Root $Root -SourceRoot $SourceRoot -StatePath $StatePath -Component $Component -BuildId $BuildId -RuntimeLock $RuntimeLockPath -ModelLock $ModelLockPath -ExpectedPython $ExpectedPython -ImportProbe $ImportProbe -ValidateAssets
     if (!$repairedStateComplete) { throw "repaired install-state.json failed complete validation" }
 }
 
@@ -181,15 +161,11 @@ $manifestPath = Join-Path $Root "package\tts-more-package.json"
 $buildId = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [string](Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).build_id } else { "source-checkout" }
 $expectedPython = if ([string]::IsNullOrWhiteSpace([string]$runtimeLock.python_version)) { [string]$config.python } else { [string]$runtimeLock.python_version }
 $importProbe = if ($runtimeLock.PSObject.Properties["import_probe"] -and ![string]::IsNullOrWhiteSpace([string]$runtimeLock.import_probe)) { [string]$runtimeLock.import_probe } else { [string]$config.import_probe }
-$installStateComplete = Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-    Test-PortableInstallStateComplete -Root $Root -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets
-}
+$installStateComplete = Test-PortableInstallStateComplete -Root $Root -SourceRoot $SourceRoot -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets
 if ($installStateComplete) { Write-Host "verified runtime and install state already exist"; exit 0 }
 $lockedAssetsComplete = Test-PortableLockedAssets -Root $Root -ModelLock $modelLockPath
 $runtimeComplete = if ($lockedAssetsComplete) {
-    Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-        Test-PortableRuntime -Root $Root -PythonPath (Join-Path $live "python.exe") -ExpectedVersion $expectedPython -ImportProbe $importProbe
-    }
+    Test-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath (Join-Path $live "python.exe") -ExpectedVersion $expectedPython -ImportProbe $importProbe
 } else { $false }
 if ($lockedAssetsComplete -and $runtimeComplete) {
     Repair-PortableWorkerStaleState -SourceRoot $SourceRoot -Root $Root -StatePath $state -LivePath $live -BundleRoot $Bundle -Component ([string]$config.component) -BuildId $buildId -RuntimeLockPath $runtimeLockPath -ModelLockPath $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -RuntimeLockPayload $runtimeLock
@@ -283,15 +259,14 @@ if ($LASTEXITCODE -ne 0) { throw "frozen dependency synchronization failed" }
 if ($LASTEXITCODE -ne 0) { throw "uv pip check failed" }
 & $PortableRuntime.Python (Join-Path $Bundle "portable_install.py") prune-console-launchers --site-packages $PortableRuntime.SitePackages
 if ($LASTEXITCODE -ne 0) { throw "failed to prune non-relocatable dependency launchers" }
-Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-    & $PortableRuntime.Python -c $importProbe
-    if ($LASTEXITCODE -ne 0) { throw "core import/ONNX probe failed" }
-}
+Invoke-PortablePythonSourceProbe -Root $Root -SourceRoot $SourceRoot -PythonPath $PortableRuntime.Python -ImportProbe $importProbe
 if ($selected -ne "cpu") {
     $expectedCuda = if ($selected -eq "cu128") { "12.8" } else { "12.6" }
-    Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-        & $PortableRuntime.Python -c "import torch; assert torch.cuda.is_available(); assert torch.version.cuda.startswith('$expectedCuda'); print(torch.cuda.get_device_name(0))"
-        if ($LASTEXITCODE -ne 0) { throw "explicit $selected package Torch/CUDA probe failed; CPU fallback is prohibited" }
+    $cudaProbe = "import torch; assert torch.cuda.is_available(); assert torch.version.cuda.startswith('$expectedCuda'); print(torch.cuda.get_device_name(0))"
+    try {
+        Invoke-PortablePythonSourceProbe -Root $Root -SourceRoot $SourceRoot -PythonPath $PortableRuntime.Python -ImportProbe $cudaProbe
+    } catch {
+        throw "explicit $selected package Torch/CUDA probe failed; CPU fallback is prohibited: $($_.Exception.Message)"
     }
 }
 

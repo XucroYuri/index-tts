@@ -975,15 +975,16 @@ class PortableIntegrationContractTests(unittest.TestCase):
             "--link-mode",
             '"copy"',
             "pip check",
-            "& $PortableRuntime.Python -c $importProbe",
+            "Invoke-PortablePythonSourceProbe -Root $Root -SourceRoot $SourceRoot -PythonPath $PortableRuntime.Python -ImportProbe $importProbe",
         )
         for token in required:
             self.assertIn(token, initializer, token)
         positions = [initializer.index(token) for token in required]
         self.assertEqual(positions, sorted(positions))
         publish_call = initializer.rindex("Publish-PortableRuntimeTransaction")
-        self.assertGreater(publish_call, initializer.index("& $PortableRuntime.Python -c $importProbe"))
+        self.assertGreater(publish_call, initializer.index(required[-1]))
         self.assertGreater(initializer.rindex("write-state"), publish_call)
+        self.assertNotIn("& $PortableRuntime.Python -c $importProbe", initializer)
         for forbidden in (
             "bootstrap-conda.ps1",
             "conda create",

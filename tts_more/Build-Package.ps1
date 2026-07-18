@@ -383,7 +383,9 @@ function Remove-WorkerOwnedDirectoryContents {
             catch [IO.DirectoryNotFoundException] { continue }
         }
         else {
-            [IO.File]::Delete($currentChild.FullName)
+            try { [IO.File]::Delete($currentChild.FullName) }
+            catch [IO.FileNotFoundException] { continue }
+            catch [IO.DirectoryNotFoundException] { continue }
         }
     }
 }
@@ -581,19 +583,13 @@ function Test-WorkerFullRuntimeOnOtherVolume {
         $runtimeCopy = Join-Path $probeRoot "runtime-live"
         Copy-Item -LiteralPath (Join-Path $PackageRoot "runtime\live") -Destination $runtimeCopy -Recurse
         $python = Join-Path $runtimeCopy "python.exe"
-        $probeWorkingDirectory = [IO.Path]::GetFullPath((Join-Path $PackageRoot "app"))
-        $previousPythonPath = [Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
-        Push-Location -LiteralPath $probeWorkingDirectory
+        $probeSourceRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot "app"))
+        & $python -c "import platform,sys; raise SystemExit(0 if platform.python_version()==sys.argv[1] else 1)" $ExpectedPython
+        if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python version probe failed" }
         try {
-            [Environment]::SetEnvironmentVariable("PYTHONPATH", $probeWorkingDirectory, "Process")
-            & $python -c "import platform,sys; raise SystemExit(0 if platform.python_version()==sys.argv[1] else 1)" $ExpectedPython
-            if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python version probe failed" }
-            & $python -c $ImportProbe
-            if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python import probe failed" }
-        }
-        finally {
-            [Environment]::SetEnvironmentVariable("PYTHONPATH", $previousPythonPath, "Process")
-            Pop-Location
+            Invoke-PortablePythonSourceProbe -Root $PackageRoot -SourceRoot $probeSourceRoot -RuntimeRoot $probeRoot -PythonPath $python -ImportProbe $ImportProbe
+        } catch {
+            throw "cross-volume embedded Python import probe failed: $($_.Exception.Message)"
         }
         return "passed"
     }

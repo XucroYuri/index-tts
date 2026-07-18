@@ -565,7 +565,7 @@ function Resolve-PortableImportPython {
     )
 
     $livePython = Join-Path $Context.Root "runtime\live\python.exe"
-    if (Test-PortableRuntime -Root $Context.Root -PythonPath $livePython -ExpectedVersion $Context.ExpectedPython -ImportProbe $Context.ImportProbe) {
+    if (Test-PortableRuntime -Root $Context.Root -SourceRoot $Context.SourceRoot -PythonPath $livePython -ExpectedVersion $Context.ExpectedPython -ImportProbe $Context.ImportProbe) {
         $jsonschemaProbe = Invoke-PortableCapturedProcess -FilePath $livePython -Arguments @("-c", "import jsonschema") -MaximumBytes 65536 -Utf8
         if ($jsonschemaProbe.ExitCode -eq 0 -and !$jsonschemaProbe.Exceeded) { return [IO.Path]::GetFullPath($livePython) }
     }
@@ -974,7 +974,7 @@ function Test-InstallState {
     param([Parameter(Mandatory = $true)][string]$Root, [switch]$Full)
 
     $context = if ($script:Context) { $script:Context } else { Get-PackageContext -Root $Root }
-    return Test-PortableInstallStateComplete -Root $context.Root -StatePath $context.StatePath -Component $context.Component -BuildId $context.BuildId -RuntimeLock $context.RuntimeLock -ModelLock $context.ModelLock -ExpectedPython $context.ExpectedPython -ImportProbe $context.ImportProbe -ValidateAssets:$Full -Sha256Manifest $context.Sha256Manifest -RequiredCoverage $context.RequiredCoverage
+    return Test-PortableInstallStateComplete -Root $context.Root -SourceRoot $context.SourceRoot -StatePath $context.StatePath -Component $context.Component -BuildId $context.BuildId -RuntimeLock $context.RuntimeLock -ModelLock $context.ModelLock -ExpectedPython $context.ExpectedPython -ImportProbe $context.ImportProbe -ValidateAssets:$Full -Sha256Manifest $context.Sha256Manifest -RequiredCoverage $context.RequiredCoverage
 }
 
 function Get-PortableInstallStateDiagnostic {

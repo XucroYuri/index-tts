@@ -346,6 +346,31 @@ function Assert-PortableWorkPath {
     return $true
 }
 
+function New-WorkerUvCacheLeaf {
+    $nonceBytes = New-Object byte[] 2
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($nonceBytes) }
+    finally { $generator.Dispose() }
+    return "u-$(([BitConverter]::ToString($nonceBytes)).Replace('-', '').ToLowerInvariant())"
+}
+
+function Remove-WorkerOwnedDirectoryContents {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+        if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "refusing to clean a worker-owned directory containing a reparse point: $($child.FullName)"
+        }
+        if ($child.PSIsContainer) {
+            Remove-WorkerOwnedDirectoryContents -Path $child.FullName
+            [IO.Directory]::Delete($child.FullName, $false)
+        }
+        else {
+            [IO.File]::Delete($child.FullName)
+        }
+    }
+}
+
 $Bundle = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $Root = [System.IO.Path]::GetFullPath((Split-Path -Parent $Bundle))
 $config = Get-Content -LiteralPath (Join-Path $Bundle "component.json") -Raw | ConvertFrom-Json
@@ -588,6 +613,11 @@ $createdWorkHandle = $null
 $createdWorkIdentity = $null
 $workCreated = $false
 $workBaseHandle = $null
+$isolatedUvCache = ""
+$isolatedUvCacheLeaf = ""
+$isolatedUvCacheHandle = $null
+$isolatedUvCacheIdentity = $null
+$isolatedUvCacheCreated = $false
 try {
 New-Item -ItemType Directory -Force -Path $workBase | Out-Null
 [void](Assert-PortableWorkPath -CandidatePath $workBase)
@@ -711,18 +741,50 @@ $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stag
 
 $resolvedProfile = ""
 $runtimeCrossVolumeProbe = "not_run"
-$isolatedUvCache = ""
 if ($Profile -eq "Full") {
     $previousUvCache = $env:UV_CACHE_DIR
-    $isolatedUvCache = Join-Path $work "uv-cache"
     try {
+        for ($attempt = 0; $attempt -lt 128; $attempt++) {
+            $isolatedUvCacheLeaf = New-WorkerUvCacheLeaf
+            try {
+                $isolatedUvCacheHandle = [TtsMorePortableDirectoryHandle]::CreateDirectoryRelative($workBaseHandle, $isolatedUvCacheLeaf, $false)
+                break
+            }
+            catch {
+                $nativeException = $_.Exception
+                while ($nativeException.InnerException -ne $null) { $nativeException = $nativeException.InnerException }
+                if ($nativeException -is [ComponentModel.Win32Exception] -and $nativeException.NativeErrorCode -in @(80, 183)) { continue }
+                throw
+            }
+        }
+        if ($isolatedUvCacheHandle -eq $null) { throw "failed to atomically claim a short worker uv cache after 128 attempts" }
+        $isolatedUvCache = [IO.Path]::GetFullPath((Join-Path $workBase $isolatedUvCacheLeaf))
+        $isolatedUvCacheCreated = $true
+        [void](Assert-PortableWorkPath -CandidatePath $isolatedUvCache)
+        $isolatedUvCacheIdentity = [TtsMorePortableDirectoryHandle]::Identity($isolatedUvCacheHandle)
         $env:UV_CACHE_DIR = $isolatedUvCache
         & (Join-Path $stagedBundle "Initialize.ps1") -Device $Device -PackageRoot $stage
         if ($LASTEXITCODE -ne 0) { throw "full package initialization failed" }
     }
     finally {
         $env:UV_CACHE_DIR = $previousUvCache
-        if (Test-Path -LiteralPath $isolatedUvCache) { Remove-Item -LiteralPath $isolatedUvCache -Recurse -Force }
+        if ($isolatedUvCacheCreated) {
+            if ([string]::IsNullOrWhiteSpace($isolatedUvCacheIdentity)) { throw "worker uv cache identity capture did not complete; refusing path-based cleanup" }
+            if (!(Assert-PortableWorkPath -CandidatePath $isolatedUvCache)) { throw "worker uv cache disappeared after creation; refusing path-based cleanup" }
+            $resolvedUvCache = [IO.Path]::GetFullPath($isolatedUvCache)
+            if (![string]::Equals(([IO.Path]::GetDirectoryName($resolvedUvCache)).TrimEnd('\', '/'), $workBase.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase) -or
+                [IO.Path]::GetFileName($resolvedUvCache) -ne $isolatedUvCacheLeaf) {
+                throw "refusing to clean a worker uv cache outside its verified WorkRoot parent: $resolvedUvCache"
+            }
+            $cleanupUvIdentity = [TtsMorePortableDirectoryHandle]::Identity($isolatedUvCacheHandle)
+            if (![string]::Equals($cleanupUvIdentity, $isolatedUvCacheIdentity, [StringComparison]::Ordinal)) { throw "worker uv cache handle identity changed unexpectedly: $resolvedUvCache" }
+            Remove-WorkerOwnedDirectoryContents -Path $resolvedUvCache
+            if (@(Get-ChildItem -LiteralPath $resolvedUvCache -Force).Count -ne 0) { throw "worker uv cache is not empty after owned cleanup: $resolvedUvCache" }
+            [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($isolatedUvCacheHandle)
+            $isolatedUvCacheHandle.Dispose()
+            $isolatedUvCacheHandle = $null
+            $isolatedUvCacheCreated = $false
+        }
     }
     Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
     Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
@@ -847,6 +909,7 @@ finally {
         }
     }
     finally {
+        if ($isolatedUvCacheHandle -ne $null) { $isolatedUvCacheHandle.Dispose() }
         if ($createdWorkHandle -ne $null) { $createdWorkHandle.Dispose() }
         if ($workBaseHandle -ne $null) { $workBaseHandle.Dispose() }
     }

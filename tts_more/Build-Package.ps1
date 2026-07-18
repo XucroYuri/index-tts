@@ -355,18 +355,35 @@ function New-WorkerUvCacheLeaf {
 }
 
 function Remove-WorkerOwnedDirectoryContents {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$AllowMissing
+    )
 
-    foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
-        if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "refusing to clean a worker-owned directory containing a reparse point: $($child.FullName)"
+    try { $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) }
+    catch [Management.Automation.ItemNotFoundException] {
+        if ($AllowMissing) { return }
+        throw
+    }
+    catch [IO.DirectoryNotFoundException] {
+        if ($AllowMissing) { return }
+        throw
+    }
+    foreach ($child in $children) {
+        try { $currentChild = Get-Item -LiteralPath $child.FullName -Force -ErrorAction Stop }
+        catch [Management.Automation.ItemNotFoundException] { continue }
+        catch [IO.FileNotFoundException] { continue }
+        catch [IO.DirectoryNotFoundException] { continue }
+        if (($currentChild.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "refusing to clean a worker-owned directory containing a reparse point: $($currentChild.FullName)"
         }
-        if ($child.PSIsContainer) {
-            Remove-WorkerOwnedDirectoryContents -Path $child.FullName
-            [IO.Directory]::Delete($child.FullName, $false)
+        if ($currentChild.PSIsContainer) {
+            Remove-WorkerOwnedDirectoryContents -Path $currentChild.FullName -AllowMissing
+            try { [IO.Directory]::Delete($currentChild.FullName, $false) }
+            catch [IO.DirectoryNotFoundException] { continue }
         }
         else {
-            [IO.File]::Delete($child.FullName)
+            [IO.File]::Delete($currentChild.FullName)
         }
     }
 }
@@ -564,10 +581,20 @@ function Test-WorkerFullRuntimeOnOtherVolume {
         $runtimeCopy = Join-Path $probeRoot "runtime-live"
         Copy-Item -LiteralPath (Join-Path $PackageRoot "runtime\live") -Destination $runtimeCopy -Recurse
         $python = Join-Path $runtimeCopy "python.exe"
-        & $python -c "import platform,sys; raise SystemExit(0 if platform.python_version()==sys.argv[1] else 1)" $ExpectedPython
-        if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python version probe failed" }
-        & $python -c $ImportProbe
-        if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python import probe failed" }
+        $probeWorkingDirectory = [IO.Path]::GetFullPath((Join-Path $PackageRoot "app"))
+        $previousPythonPath = [Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
+        Push-Location -LiteralPath $probeWorkingDirectory
+        try {
+            [Environment]::SetEnvironmentVariable("PYTHONPATH", $probeWorkingDirectory, "Process")
+            & $python -c "import platform,sys; raise SystemExit(0 if platform.python_version()==sys.argv[1] else 1)" $ExpectedPython
+            if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python version probe failed" }
+            & $python -c $ImportProbe
+            if ($LASTEXITCODE -ne 0) { throw "cross-volume embedded Python import probe failed" }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable("PYTHONPATH", $previousPythonPath, "Process")
+            Pop-Location
+        }
         return "passed"
     }
     finally { if (Test-Path -LiteralPath $probeRoot) { Remove-Item -LiteralPath $probeRoot -Recurse -Force } }
@@ -743,6 +770,8 @@ $resolvedProfile = ""
 $runtimeCrossVolumeProbe = "not_run"
 if ($Profile -eq "Full") {
     $previousUvCache = $env:UV_CACHE_DIR
+    $primaryFailure = $null
+    $uvCleanupFailure = $null
     try {
         for ($attempt = 0; $attempt -lt 128; $attempt++) {
             $isolatedUvCacheLeaf = New-WorkerUvCacheLeaf
@@ -766,26 +795,40 @@ if ($Profile -eq "Full") {
         & (Join-Path $stagedBundle "Initialize.ps1") -Device $Device -PackageRoot $stage
         if ($LASTEXITCODE -ne 0) { throw "full package initialization failed" }
     }
+    catch { $primaryFailure = $_ }
     finally {
-        $env:UV_CACHE_DIR = $previousUvCache
-        if ($isolatedUvCacheCreated) {
-            if ([string]::IsNullOrWhiteSpace($isolatedUvCacheIdentity)) { throw "worker uv cache identity capture did not complete; refusing path-based cleanup" }
-            if (!(Assert-PortableWorkPath -CandidatePath $isolatedUvCache)) { throw "worker uv cache disappeared after creation; refusing path-based cleanup" }
-            $resolvedUvCache = [IO.Path]::GetFullPath($isolatedUvCache)
-            if (![string]::Equals(([IO.Path]::GetDirectoryName($resolvedUvCache)).TrimEnd('\', '/'), $workBase.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase) -or
-                [IO.Path]::GetFileName($resolvedUvCache) -ne $isolatedUvCacheLeaf) {
-                throw "refusing to clean a worker uv cache outside its verified WorkRoot parent: $resolvedUvCache"
+        try {
+            $env:UV_CACHE_DIR = $previousUvCache
+            if ($isolatedUvCacheCreated) {
+                if ([string]::IsNullOrWhiteSpace($isolatedUvCacheIdentity)) { throw "worker uv cache identity capture did not complete; refusing path-based cleanup" }
+                if (!(Assert-PortableWorkPath -CandidatePath $isolatedUvCache)) { throw "worker uv cache disappeared after creation; refusing path-based cleanup" }
+                $resolvedUvCache = [IO.Path]::GetFullPath($isolatedUvCache)
+                if (![string]::Equals(([IO.Path]::GetDirectoryName($resolvedUvCache)).TrimEnd('\', '/'), $workBase.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase) -or
+                    [IO.Path]::GetFileName($resolvedUvCache) -ne $isolatedUvCacheLeaf) {
+                    throw "refusing to clean a worker uv cache outside its verified WorkRoot parent: $resolvedUvCache"
+                }
+                $cleanupUvIdentity = [TtsMorePortableDirectoryHandle]::Identity($isolatedUvCacheHandle)
+                if (![string]::Equals($cleanupUvIdentity, $isolatedUvCacheIdentity, [StringComparison]::Ordinal)) { throw "worker uv cache handle identity changed unexpectedly: $resolvedUvCache" }
+                Remove-WorkerOwnedDirectoryContents -Path $resolvedUvCache
+                if (@(Get-ChildItem -LiteralPath $resolvedUvCache -Force).Count -ne 0) { throw "worker uv cache is not empty after owned cleanup: $resolvedUvCache" }
+                [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($isolatedUvCacheHandle)
+                $isolatedUvCacheHandle.Dispose()
+                $isolatedUvCacheHandle = $null
+                $isolatedUvCacheCreated = $false
             }
-            $cleanupUvIdentity = [TtsMorePortableDirectoryHandle]::Identity($isolatedUvCacheHandle)
-            if (![string]::Equals($cleanupUvIdentity, $isolatedUvCacheIdentity, [StringComparison]::Ordinal)) { throw "worker uv cache handle identity changed unexpectedly: $resolvedUvCache" }
-            Remove-WorkerOwnedDirectoryContents -Path $resolvedUvCache
-            if (@(Get-ChildItem -LiteralPath $resolvedUvCache -Force).Count -ne 0) { throw "worker uv cache is not empty after owned cleanup: $resolvedUvCache" }
-            [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($isolatedUvCacheHandle)
-            $isolatedUvCacheHandle.Dispose()
-            $isolatedUvCacheHandle = $null
-            $isolatedUvCacheCreated = $false
         }
+        catch { $uvCleanupFailure = $_ }
     }
+    if ($null -ne $primaryFailure) {
+        if ($null -ne $uvCleanupFailure) {
+            throw [InvalidOperationException]::new(
+                "full package initialization failed: $($primaryFailure.Exception.Message); worker uv cache cleanup also failed: $($uvCleanupFailure.Exception.Message)",
+                $primaryFailure.Exception
+            )
+        }
+        throw $primaryFailure
+    }
+    if ($null -ne $uvCleanupFailure) { throw $uvCleanupFailure }
     Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
     Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
     $runtimeLockForProbe = Get-Content -LiteralPath (Join-Path $stagedBundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json

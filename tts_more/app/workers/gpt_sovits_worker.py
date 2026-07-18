@@ -33,7 +33,9 @@ The pipeline is constructed once at startup and held resident for low latency;
 from __future__ import annotations
 
 import os
+import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 

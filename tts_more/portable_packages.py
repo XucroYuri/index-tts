@@ -295,7 +295,6 @@ def select_full_package(
     except (
         OSError,
         ValueError,
-        UnicodeDecodeError,
         json.JSONDecodeError,
         zipfile.BadZipFile,
     ) as exc:
@@ -600,7 +599,7 @@ def audit_release_zip(path: Path) -> dict[str, object]:
                 ):
                     errors.append(f"forbidden release asset: {relative}")
                     break
-    except (OSError, ValueError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
         errors.append(f"invalid release ZIP: {exc}")
     return {"valid": not errors, "errors": errors, "path": str(path)}
 
@@ -714,7 +713,6 @@ def audit_release_assets(
     except (
         OSError,
         ValueError,
-        UnicodeDecodeError,
         json.JSONDecodeError,
         zipfile.BadZipFile,
     ) as exc:
@@ -1228,7 +1226,7 @@ def verify_sha256_manifest(package_root: Path) -> dict[str, object]:
             actual = hashlib.sha256(files[canonical].read_bytes()).hexdigest()
             if actual != expected:
                 errors.append(f"SHA256SUMS hash mismatch: {relative}")
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         errors.append(str(exc))
     return {"valid": not errors, "errors": errors, "package_root": str(package_root)}
 

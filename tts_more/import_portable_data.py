@@ -577,7 +577,7 @@ def _model_source_evidence(root: Path, relative: Path) -> FileEvidence | None:
     try:
         _assert_existing_chain(root, candidate, "model asset target")
         metadata = candidate.lstat()
-    except (FileNotFoundError, PortableMigrationError, OSError):
+    except (PortableMigrationError, OSError):
         return None
     if _is_reparse(metadata) or candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode):
         return None

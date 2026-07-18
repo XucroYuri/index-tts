@@ -49,6 +49,34 @@ function Invoke-PortableWorkerSourceContext {
     }
 }
 
+function Repair-PortableWorkerStaleState {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$StatePath,
+        [Parameter(Mandatory = $true)][string]$LivePath,
+        [Parameter(Mandatory = $true)][string]$BundleRoot,
+        [Parameter(Mandatory = $true)][string]$Component,
+        [Parameter(Mandatory = $true)][string]$BuildId,
+        [Parameter(Mandatory = $true)][string]$RuntimeLockPath,
+        [Parameter(Mandatory = $true)][string]$ModelLockPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedPython,
+        [Parameter(Mandatory = $true)][string]$ImportProbe,
+        [Parameter(Mandatory = $true)][object]$RuntimeLockPayload
+    )
+    $existingState = if (Test-Path -LiteralPath $StatePath -PathType Leaf) { try { Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json } catch { $null } } else { $null }
+    $requestedProfile = if ($existingState -and ![string]::IsNullOrWhiteSpace([string]$existingState.profile)) { [string]$existingState.profile } else { "" }
+    $selectedProfile = Resolve-PortableSupportedProfile -RuntimeLockPayload $RuntimeLockPayload -RequestedProfile $requestedProfile
+    $runtimeSha = Get-PortableFileSha256 -Path $RuntimeLockPath
+    $modelSha = Get-PortableFileSha256 -Path $ModelLockPath
+    & (Join-Path $LivePath "python.exe") (Join-Path $BundleRoot "portable_install.py") write-state --path $StatePath --component $Component --build-id $BuildId --profile $selectedProfile --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
+    if ($LASTEXITCODE -ne 0) { throw "failed to repair stale install-state.json" }
+    $repairedStateComplete = Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
+        Test-PortableInstallStateComplete -Root $Root -StatePath $StatePath -Component $Component -BuildId $BuildId -RuntimeLock $RuntimeLockPath -ModelLock $ModelLockPath -ExpectedPython $ExpectedPython -ImportProbe $ImportProbe -ValidateAssets
+    }
+    if (!$repairedStateComplete) { throw "repaired install-state.json failed complete validation" }
+}
+
 function Resolve-OperationContract {
     param([string]$PackageRoot, [string]$OperationRoot = "", [string]$CancelFile = "")
 
@@ -164,17 +192,7 @@ $runtimeComplete = if ($lockedAssetsComplete) {
     }
 } else { $false }
 if ($lockedAssetsComplete -and $runtimeComplete) {
-    $existingState = if (Test-Path -LiteralPath $state -PathType Leaf) { try { Get-Content -LiteralPath $state -Raw | ConvertFrom-Json } catch { $null } } else { $null }
-    $requestedProfile = if ($existingState -and ![string]::IsNullOrWhiteSpace([string]$existingState.profile)) { [string]$existingState.profile } else { "" }
-    $selectedProfile = Resolve-PortableSupportedProfile -RuntimeLockPayload $runtimeLock -RequestedProfile $requestedProfile
-    $runtimeSha = Get-PortableFileSha256 -Path $runtimeLockPath
-    $modelSha = Get-PortableFileSha256 -Path $modelLockPath
-    & (Join-Path $live "python.exe") (Join-Path $Bundle "portable_install.py") write-state --path $state --component ([string]$config.component) --build-id $buildId --profile $selectedProfile --runtime-lock-sha256 $runtimeSha --model-lock-sha256 $modelSha
-    if ($LASTEXITCODE -ne 0) { throw "failed to repair stale install-state.json" }
-    $repairedStateComplete = Invoke-PortableWorkerSourceContext -SourceRoot $SourceRoot -Action {
-        Test-PortableInstallStateComplete -Root $Root -StatePath $state -Component ([string]$config.component) -BuildId $buildId -RuntimeLock $runtimeLockPath -ModelLock $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -ValidateAssets
-    }
-    if (!$repairedStateComplete) { throw "repaired install-state.json failed complete validation" }
+    Repair-PortableWorkerStaleState -SourceRoot $SourceRoot -Root $Root -StatePath $state -LivePath $live -BundleRoot $Bundle -Component ([string]$config.component) -BuildId $buildId -RuntimeLockPath $runtimeLockPath -ModelLockPath $modelLockPath -ExpectedPython $expectedPython -ImportProbe $importProbe -RuntimeLockPayload $runtimeLock
     Write-Host "verified package-private assets and repaired stale install state"
     exit 0
 }

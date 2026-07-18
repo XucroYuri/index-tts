@@ -27,6 +27,8 @@ CancelCheck = Callable[[], bool]
 Downloader = Callable[[str, Path, int, ProgressCallback | None, CancelCheck | None], None]
 CONTENT_RANGE_PATTERN = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 ENTRY_POINT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+DOWNLOAD_ATTEMPTS_PER_URL = 3
+DOWNLOAD_RETRY_DELAYS = (1.0, 2.0)
 
 
 def load_json(path: Path) -> Any:
@@ -229,25 +231,29 @@ def ensure_locked_asset(
     download = downloader or _download_http
     failures: list[str] = []
     for url in urls:
-        if cancelled and cancelled():
-            raise PortableInstallCancelled("portable installation cancelled")
-        resume_from = partial.stat().st_size if partial.exists() else 0
-        try:
-            download(url, partial, resume_from, progress, cancelled)
-        except PortableInstallCancelled:
-            raise
-        except Exception as exc:  # URL fallback is part of the package contract.
-            failures.append(f"{url}: {exc}")
-            continue
-        if cancelled and cancelled():
-            raise PortableInstallCancelled("portable installation cancelled")
-        if not _asset_matches(partial, expected_hash, expected_size):
-            failures.append(f"{url}: failed SHA-256 verification")
-            if partial.is_file() and partial.stat().st_size >= expected_size:
-                partial.unlink()
-            continue
-        os.replace(partial, destination)
-        return {"path": str(destination), "reused": False, "source": url}
+        for attempt in range(DOWNLOAD_ATTEMPTS_PER_URL):
+            if cancelled and cancelled():
+                raise PortableInstallCancelled("portable installation cancelled")
+            resume_from = partial.stat().st_size if partial.exists() else 0
+            try:
+                download(url, partial, resume_from, progress, cancelled)
+            except PortableInstallCancelled:
+                raise
+            except Exception as exc:  # Retry this immutable source before mirror fallback.
+                if attempt < DOWNLOAD_ATTEMPTS_PER_URL - 1:
+                    time.sleep(DOWNLOAD_RETRY_DELAYS[attempt])
+                    continue
+                failures.append(f"{url}: {exc}")
+                break
+            if cancelled and cancelled():
+                raise PortableInstallCancelled("portable installation cancelled")
+            if not _asset_matches(partial, expected_hash, expected_size):
+                failures.append(f"{url}: failed SHA-256 verification")
+                if partial.is_file() and partial.stat().st_size >= expected_size:
+                    partial.unlink()
+                break
+            os.replace(partial, destination)
+            return {"path": str(destination), "reused": False, "source": url}
     detail = "; ".join(failures) or "no source succeeded"
     if "failed SHA-256 verification" in detail:
         raise RuntimeError(f"asset failed SHA-256 verification: {asset.get('id') or destination.name}")

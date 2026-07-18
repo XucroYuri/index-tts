@@ -12,6 +12,12 @@ $ErrorActionPreference = "Stop"
 if ($Profile -eq "Full" -and $env:GITHUB_ACTIONS -eq "true") { throw "profile=full is local-only and cannot be built by a GitHub upload workflow" }
 if ($Version -notmatch "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$") { throw "package Version must contain only ASCII letters, digits, dot, underscore, or hyphen (maximum 128 characters)" }
 
+$ValidationScript = Join-Path $PSScriptRoot "Portable-Validation.ps1"
+if (-not (Test-Path -LiteralPath $ValidationScript -PathType Leaf)) {
+    throw "portable validation library is missing: $ValidationScript"
+}
+. $ValidationScript
+
 if (-not ("TtsMorePortableDirectoryHandle" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;

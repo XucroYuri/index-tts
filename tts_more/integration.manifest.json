@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "25b79abe71844e61e4032eaa3a1d5bafb88ce1b1",
+  "source_revision": "18baa496232b9cfab0c67e253908d717615d90a9",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -57,7 +57,7 @@
     "tts_more/locks/runtime.lock.json": "a0f4b7786bd0e6735aade17016795c1dd2d944bb48d72a8825e285e288241f83",
     "tts_more/locks/toolchain.lock.json": "f05b4f44bbe2ad76a69cb909d2f54f969b9fb27701ba902ba9984cc02c9e8d35",
     "tts_more/portable-python.ps1": "aeb067a4008775f63cf87d8214c02d5c8c3abdc3fdb30502732df9241f10981c",
-    "tts_more/portable_install.py": "78bfdf2430a05d36a9fa5f2f8f2e8460fab6b540465b0438382e29c623352bc1",
+    "tts_more/portable_install.py": "16e8b10f11bf52ebc10306582cf36dee215d7452add96d200ad0da1cf33534df",
     "tts_more/portable_launcher.py": "5214d08787cbc6e915dcd4c47754d59a8863c288952ef2e6e888d1a534954d5c",
     "tts_more/portable_operations.py": "74e344171328c05a420a469a47e53c1f1cee27a30a3d0971df4b9137c5b92ec1",
     "tts_more/portable_packages.py": "9584194aabf6151c7af2958b0b2ab3c222304f3786beafdd97875b94d94b5232",

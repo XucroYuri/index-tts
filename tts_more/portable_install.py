@@ -72,7 +72,11 @@ def prune_console_launchers(site_packages: Path) -> dict[str, object]:
     if not launcher_root.is_dir() or _is_reparse_point(launcher_root):
         raise ValueError("console launcher root must be a real directory")
 
-    candidates = [launcher_root / f"{name}.exe" for name in sorted(entry_point_names)]
+    candidates = [
+        launcher_root / f"{name}{suffix}"
+        for name in sorted(entry_point_names)
+        for suffix in (".exe", ".py")
+    ]
     existing_candidates = [candidate for candidate in candidates if os.path.lexists(candidate)]
     for candidate in existing_candidates:
         if _is_reparse_point(candidate):

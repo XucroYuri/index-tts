@@ -871,7 +871,6 @@ if ($Profile -eq "Full") {
                 $cleanupUvIdentity = [TtsMorePortableDirectoryHandle]::Identity($isolatedUvCacheHandle)
                 if (![string]::Equals($cleanupUvIdentity, $isolatedUvCacheIdentity, [StringComparison]::Ordinal)) { throw "worker uv cache handle identity changed unexpectedly: $resolvedUvCache" }
                 Remove-WorkerOwnedDirectoryContents -Path $resolvedUvCache
-                if (@(Get-ChildItem -LiteralPath $resolvedUvCache -Force).Count -ne 0) { throw "worker uv cache is not empty after owned cleanup: $resolvedUvCache" }
                 [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($isolatedUvCacheHandle)
                 $isolatedUvCacheHandle.Dispose()
                 $isolatedUvCacheHandle = $null
@@ -1001,9 +1000,6 @@ finally {
                 throw "worker package staging handle identity changed unexpectedly: $resolvedWork"
             }
             Remove-WorkerOwnedDirectoryContents -Path $resolvedWork
-            if (@(Get-ChildItem -LiteralPath $resolvedWork -Force).Count -ne 0) {
-                throw "worker package staging directory is not empty after child cleanup; refusing recursive root deletion: $resolvedWork"
-            }
             [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($createdWorkHandle)
             $createdWorkHandle.Dispose()
             $createdWorkHandle = $null

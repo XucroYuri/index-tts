@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata as importlib_metadata
 import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -24,11 +26,72 @@ ProgressCallback = Callable[[int, int, str], None]
 CancelCheck = Callable[[], bool]
 Downloader = Callable[[str, Path, int, ProgressCallback | None, CancelCheck | None], None]
 CONTENT_RANGE_PATTERN = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
+ENTRY_POINT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def load_json(path: Path) -> Any:
     """Read JSON emitted by either Python or Windows PowerShell 5.1."""
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _is_reparse_point(path: Path) -> bool:
+    file_attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(file_attributes & reparse_attribute)
+
+
+def prune_console_launchers(site_packages: Path) -> dict[str, object]:
+    site_packages = Path(site_packages)
+    if _is_reparse_point(site_packages):
+        raise ValueError("site-packages must be a real directory")
+    site_packages = site_packages.resolve(strict=True)
+    if not site_packages.is_dir():
+        raise ValueError("site-packages must be a real directory")
+
+    entry_point_names: set[str] = set()
+    casefolded_names: dict[str, str] = {}
+    for distribution in importlib_metadata.distributions(path=[str(site_packages)]):
+        for entry_point in distribution.entry_points:
+            if entry_point.group not in {"console_scripts", "gui_scripts"}:
+                continue
+            name = entry_point.name
+            if not ENTRY_POINT_NAME_PATTERN.fullmatch(name):
+                raise ValueError(f"unsafe console entry-point name: {name!r}")
+            folded = name.casefold()
+            previous = casefolded_names.get(folded)
+            if previous is not None and previous != name:
+                raise ValueError(f"ambiguous console entry-point names: {previous!r}, {name!r}")
+            casefolded_names[folded] = name
+            entry_point_names.add(name)
+
+    launcher_root = site_packages / "bin"
+    if not os.path.lexists(launcher_root):
+        return {"preserved_unknown": [], "removed": []}
+    if not launcher_root.is_dir() or _is_reparse_point(launcher_root):
+        raise ValueError("console launcher root must be a real directory")
+
+    candidates = [launcher_root / f"{name}.exe" for name in sorted(entry_point_names)]
+    existing_candidates = [candidate for candidate in candidates if os.path.lexists(candidate)]
+    for candidate in existing_candidates:
+        if _is_reparse_point(candidate):
+            raise ValueError(f"reparse-point console launcher is not removable: {candidate.name}")
+        metadata = candidate.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"console launcher is not a regular file: {candidate.name}")
+        if metadata.st_nlink != 1:
+            raise ValueError(f"hardlinked console launcher is not removable: {candidate.name}")
+
+    candidate_names = {candidate.name.casefold() for candidate in candidates}
+    preserved_unknown = sorted(
+        f"bin/{entry.name}"
+        for entry in launcher_root.iterdir()
+        if entry.name.casefold() not in candidate_names
+    )
+    removed: list[str] = []
+    for candidate in existing_candidates:
+        candidate.unlink()
+        removed.append(f"bin/{candidate.name}")
+    return {"preserved_unknown": preserved_unknown, "removed": sorted(removed)}
 
 
 def resolve_operations_root(package_root: Path) -> Path:
@@ -424,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     select.add_argument("--runtime-lock", required=True, type=Path)
     select.add_argument("--requested", default="auto")
     select.add_argument("--controllers", required=True, type=Path)
+    prune = subcommands.add_parser("prune-console-launchers")
+    prune.add_argument("--site-packages", required=True, type=Path)
     state = subcommands.add_parser("write-state")
     state.add_argument("--path", required=True, type=Path)
     state.add_argument("--component", required=True)
@@ -467,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
         runtime_lock = load_json(args.runtime_lock)
         controllers = load_json(args.controllers)
         print(select_device_profile(runtime_lock, args.requested, controllers))
+        return 0
+    if args.command == "prune-console-launchers":
+        print(json.dumps(prune_console_launchers(args.site_packages), sort_keys=True))
         return 0
     if args.command == "write-state":
         write_install_state(

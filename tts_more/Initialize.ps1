@@ -222,7 +222,7 @@ if ($runtimeLock.dependency_mode -in @("uv-project", "uv-check-requirements")) {
 }
 if ($runtimeLock.dependency_mode -eq "uv-project") {
     $requirements = Join-Path $staging "frozen-requirements.txt"
-    & $PortableRuntime.Uv export --frozen --no-dev --no-emit-project --project $SourceRoot --output-file $requirements
+    & $PortableRuntime.Uv export --frozen --no-dev --no-emit-project --no-header --project $SourceRoot --output-file $requirements
     if ($LASTEXITCODE -ne 0) { throw "failed to export frozen upstream dependencies" }
     & $PortableRuntime.Uv pip install --python $PortableRuntime.Python --target $PortableRuntime.SitePackages --link-mode copy --requirement $requirements
 } else {
@@ -234,6 +234,8 @@ if ($runtimeLock.dependency_mode -eq "uv-project") {
 if ($LASTEXITCODE -ne 0) { throw "frozen dependency synchronization failed" }
 & $PortableRuntime.Uv pip check --python $PortableRuntime.Python
 if ($LASTEXITCODE -ne 0) { throw "uv pip check failed" }
+& $PortableRuntime.Python (Join-Path $Bundle "portable_install.py") prune-console-launchers --site-packages $PortableRuntime.SitePackages
+if ($LASTEXITCODE -ne 0) { throw "failed to prune non-relocatable dependency launchers" }
 & $PortableRuntime.Python -c $importProbe
 if ($LASTEXITCODE -ne 0) { throw "core import/ONNX probe failed" }
 if ($selected -ne "cpu") {

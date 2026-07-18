@@ -73,6 +73,7 @@ jobs:
           if ($null -eq $fullExit -or $fullExit -eq 0 -or (($fullOutput -join "`n") -notmatch "profile=full")) {
             throw "full profile refusal probe failed: exit=$fullExit output=$($fullOutput -join ' | ')"
           }
+          exit 0
       - uses: actions/upload-artifact@v7
         with:
           name: indextts-windows-bootstrap

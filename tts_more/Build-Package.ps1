@@ -627,8 +627,8 @@ function Get-CanonicalTextSha256 {
 
 function Remove-WorkerFullRuntimeBytecode {
     param([Parameter(Mandatory = $true)][string]$PackageRoot)
-    $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot "runtime\live"))
-    foreach ($directory in @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force | Where-Object { $_.Name -eq "__pycache__" } | Sort-Object FullName -Descending)) {
+    $cleanupRoot = [IO.Path]::GetFullPath($PackageRoot)
+    foreach ($directory in @(Get-ChildItem -LiteralPath $cleanupRoot -Directory -Recurse -Force | Where-Object { $_.Name -eq "__pycache__" } | Sort-Object FullName -Descending)) {
         try {
             $directoryIoPath = [IO.Path]::GetFullPath($directory.FullName)
             if (!$directoryIoPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
@@ -640,7 +640,7 @@ function Remove-WorkerFullRuntimeBytecode {
                 }
             }
             $directoryAttributes = [IO.File]::GetAttributes($directoryIoPath)
-            if (($directoryAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+            if (($directoryAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full package bytecode cleanup refused a reparse point" }
             Remove-WorkerOwnedDirectoryContents -Path $directory.FullName -AllowMissing
             [IO.Directory]::Delete($directoryIoPath, $false)
         }
@@ -649,7 +649,7 @@ function Remove-WorkerFullRuntimeBytecode {
             throw
         }
     }
-    foreach ($file in @(Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Force -Filter "*.pyc")) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $cleanupRoot -File -Recurse -Force -Filter "*.pyc")) {
         try {
             $fileIoPath = [IO.Path]::GetFullPath($file.FullName)
             if (!$fileIoPath.StartsWith("\\?\", [StringComparison]::Ordinal)) {
@@ -661,7 +661,7 @@ function Remove-WorkerFullRuntimeBytecode {
                 }
             }
             $fileAttributes = [IO.File]::GetAttributes($fileIoPath)
-            if (($fileAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full runtime bytecode cleanup refused a reparse point" }
+            if (($fileAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Full package bytecode cleanup refused a reparse point" }
             [IO.File]::Delete($fileIoPath)
         }
         catch {

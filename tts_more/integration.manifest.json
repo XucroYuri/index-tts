@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "0ba6858715184f9d8bd45d975886483fd58d0b12",
+  "source_revision": "bc25f23946b1d98fb4c3f8855c1b66fb0319c53d",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -14,7 +14,7 @@
     "tts_more/Initialize.ps1": "26e5b28f6cd501126dfa441316e9cf8b5bef0a775e8503fdafa8e231139bd0a6",
     "tts_more/Invoke-PortableStart.ps1": "86ab8555959bb5b31017ea396039bd130dc9c9dc0fce0f9774630a8d5f81ea77",
     "tts_more/LICENSE.integration": "705434b681fbc180c18dd224408caf4e7ad26350f313125693de18e93b1f362a",
-    "tts_more/NOTICE.integration": "7a1f26ce3c6e65220e654c33af172d65ed491f709eb6e9cd6026ea30a4d964bf",
+    "tts_more/NOTICE.integration": "352c42d750d17cb1182944689d7fbab46ebc1e5fd0cedd9102644db1afe6f6f2",
     "tts_more/Portable-Paths.ps1": "7831a05ebdd4cb868ce22bf8ffb2e9fec12ee2abdf7f12cc5fda2996e5259684",
     "tts_more/Portable-Validation.ps1": "39cacee876d220bb6b5c1abe90d1887fc3497fa047525ae4987f028db640840c",
     "tts_more/Repair.ps1": "7035ba4e4592d663adced02beeb6fa551029ca6bacd2acb1a15fde7babec5847",

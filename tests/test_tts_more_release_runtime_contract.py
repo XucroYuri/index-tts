@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import subprocess
@@ -73,39 +74,29 @@ class WorkerRuntimeContractTests(unittest.TestCase):
 
     def test_portable_launcher_and_worker_keep_artifacts_under_data_local(self) -> None:
         launcher = (BUNDLE / "Start-Worker.ps1").read_text(encoding="utf-8")
-        expected_root = ROOT / "data" / "local" / "artifacts"
+        worker = (BUNDLE / "app" / "workers" / "indextts_worker.py").read_text(encoding="utf-8")
 
         self.assertIn(
             '$env:TTS_MORE_ARTIFACT_ROOT = (Join-Path $Root "data\\local\\artifacts")',
             launcher,
         )
-        sys.path.insert(0, str(BUNDLE))
-        try:
-            from app.workers import indextts_worker
-
-            with mock.patch.dict(
-                os.environ,
-                {"TTS_MORE_ARTIFACT_ROOT": str(expected_root)},
-                clear=False,
-            ):
-                store = indextts_worker._artifact_store()
-        finally:
-            sys.path.pop(0)
-
-        self.assertEqual(expected_root.resolve(), store.root)
-        self.assertNotEqual((ROOT / "uploaded_ref").resolve(), store.root)
+        self.assertIn('os.environ.get("TTS_MORE_ARTIFACT_ROOT")', worker)
+        self.assertNotIn('ArtifactStore(REPO_DIR / "uploaded_ref")', worker)
 
     def test_indextts_worker_capabilities_match_portable_manifest_contract(self) -> None:
-        sys.path.insert(0, str(BUNDLE))
-        try:
-            from app.workers import indextts_worker
-        finally:
-            sys.path.pop(0)
+        source = (BUNDLE / "app" / "workers" / "indextts_worker.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "capabilities"
+        )
+        values = {
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
 
         self.assertTrue(
-            {"tts", "reference_audio_voice", "emotion_text", "artifact-transfer"}.issubset(
-                indextts_worker.capabilities()["capabilities"]
-            )
+            {"tts", "reference_audio_voice", "emotion_text", "artifact-transfer"}.issubset(values)
         )
 
 

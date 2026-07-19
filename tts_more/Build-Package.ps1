@@ -875,8 +875,8 @@ $integrationSha = Get-PortableFileSha256 -Path (Join-Path $stagedBundle "integra
 $deviceProfiles = if ($Device -eq "Auto") { @("auto", "cu128", "cu126", "cpu") } else { @($Device.ToLowerInvariant()) }
 $capabilities = switch ([string]$config.component) {
     "gpt-sovits" { @("tts", "trained_weights_voice", "reference_audio_voice", "artifact-transfer") }
-    "indextts" { @("tts", "reference_audio_voice", "emotion-text", "artifact-transfer") }
-    "cosyvoice" { @("tts", "sft", "zero-shot", "cross-lingual", "instruct", "artifact-transfer") }
+    "indextts" { @("tts", "reference_audio_voice", "emotion_text", "artifact-transfer") }
+    "cosyvoice" { @("tts", "reference_audio_voice", "zero_shot_voice", "cross_lingual_voice", "artifact-transfer") }
 }
 $manifest = [ordered]@{
     schema_version = 2; component = [string]$config.component

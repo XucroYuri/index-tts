@@ -19,6 +19,7 @@ $Root = $paths.PackageRoot
 $SourceRoot = $paths.SourceRoot
 $config = $paths.Config
 $env:TTS_MORE_PACKAGE_ROOT = $Root
+$env:TTS_MORE_ARTIFACT_ROOT = (Join-Path $Root "data\local\artifacts")
 $Port = if ($null -ne $PortOverride) { [int]$PortOverride } elseif ($env:TTS_MORE_PORT) { [int]$env:TTS_MORE_PORT } else { [int]$config.port }
 $Python = Join-Path $Root "runtime\live\python.exe"
 $RuntimeLock = Get-Content -LiteralPath (Join-Path $Bundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json

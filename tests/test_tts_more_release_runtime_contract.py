@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import subprocess
@@ -70,6 +71,33 @@ class WorkerRuntimeContractTests(unittest.TestCase):
                     status = runtime.worker_runtime_status(loaded=True, model="demo")
 
         self.assertEqual("GPU-logical-0", status["device_uuid"])
+
+    def test_portable_launcher_and_worker_keep_artifacts_under_data_local(self) -> None:
+        launcher = (BUNDLE / "Start-Worker.ps1").read_text(encoding="utf-8")
+        worker = (BUNDLE / "app" / "workers" / "indextts_worker.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            '$env:TTS_MORE_ARTIFACT_ROOT = (Join-Path $Root "data\\local\\artifacts")',
+            launcher,
+        )
+        self.assertIn('os.environ.get("TTS_MORE_ARTIFACT_ROOT")', worker)
+        self.assertNotIn('ArtifactStore(REPO_DIR / "uploaded_ref")', worker)
+
+    def test_indextts_worker_capabilities_match_portable_manifest_contract(self) -> None:
+        source = (BUNDLE / "app" / "workers" / "indextts_worker.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "capabilities"
+        )
+        values = {
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+
+        self.assertTrue(
+            {"tts", "reference_audio_voice", "emotion_text", "artifact-transfer"}.issubset(values)
+        )
 
 
 class ReleaseAssetGateContractTests(unittest.TestCase):

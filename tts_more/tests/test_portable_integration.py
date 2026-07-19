@@ -1016,6 +1016,37 @@ class PortableIntegrationContractTests(unittest.TestCase):
         ):
             self.assertIn(token, builder, token)
 
+    def test_worker_artifacts_and_capabilities_follow_portable_contract(self) -> None:
+        component = json.loads((BUNDLE / "component.json").read_text(encoding="utf-8"))["component"]
+        worker_name = {
+            "gpt-sovits": "gpt_sovits_worker.py",
+            "indextts": "indextts_worker.py",
+            "cosyvoice": "cosyvoice_worker.py",
+        }[component]
+        required_capabilities = {
+            "gpt-sovits": {"trained_weights_voice", "reference_audio_voice"},
+            "indextts": {"reference_audio_voice", "emotion_text"},
+            "cosyvoice": {"reference_audio_voice", "zero_shot_voice", "cross_lingual_voice"},
+        }[component]
+        starter = (BUNDLE / "Start-Worker.ps1").read_text(encoding="utf-8")
+        worker = (BUNDLE / "app" / "workers" / worker_name).read_text(encoding="utf-8")
+        builder = (BUNDLE / "Build-Package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn(
+            '$env:TTS_MORE_ARTIFACT_ROOT = (Join-Path $Root "data\\local\\artifacts")',
+            starter,
+        )
+        self.assertIn('os.environ.get("TTS_MORE_ARTIFACT_ROOT")', worker)
+        for capability in required_capabilities:
+            self.assertIn(f'"{capability}"', worker)
+        mapping = next(
+            line.strip()
+            for line in builder.splitlines()
+            if line.strip().startswith(f'"{component}" {{ @(')
+        )
+        for capability in required_capabilities:
+            self.assertIn(f'"{capability}"', mapping)
+
     def test_worker_stop_accepts_exact_patch_and_legacy_runtime_locks(self) -> None:
         worker_bundle = BUNDLE if BUNDLE.is_dir() else ROOT / "integrations" / "windows"
         stopper = (worker_bundle / "Stop-Worker.ps1").read_text(encoding="utf-8")

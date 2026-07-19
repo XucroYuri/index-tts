@@ -71,6 +71,43 @@ class WorkerRuntimeContractTests(unittest.TestCase):
 
         self.assertEqual("GPU-logical-0", status["device_uuid"])
 
+    def test_portable_launcher_and_worker_keep_artifacts_under_data_local(self) -> None:
+        launcher = (BUNDLE / "Start-Worker.ps1").read_text(encoding="utf-8")
+        expected_root = ROOT / "data" / "local" / "artifacts"
+
+        self.assertIn(
+            '$env:TTS_MORE_ARTIFACT_ROOT = (Join-Path $Root "data\\local\\artifacts")',
+            launcher,
+        )
+        sys.path.insert(0, str(BUNDLE))
+        try:
+            from app.workers import indextts_worker
+
+            with mock.patch.dict(
+                os.environ,
+                {"TTS_MORE_ARTIFACT_ROOT": str(expected_root)},
+                clear=False,
+            ):
+                store = indextts_worker._artifact_store()
+        finally:
+            sys.path.pop(0)
+
+        self.assertEqual(expected_root.resolve(), store.root)
+        self.assertNotEqual((ROOT / "uploaded_ref").resolve(), store.root)
+
+    def test_indextts_worker_capabilities_match_portable_manifest_contract(self) -> None:
+        sys.path.insert(0, str(BUNDLE))
+        try:
+            from app.workers import indextts_worker
+        finally:
+            sys.path.pop(0)
+
+        self.assertTrue(
+            {"tts", "reference_audio_voice", "emotion_text", "artifact-transfer"}.issubset(
+                indextts_worker.capabilities()["capabilities"]
+            )
+        )
+
 
 class ReleaseAssetGateContractTests(unittest.TestCase):
     def gate_args(self, names: list[str], *, tag: str = "v0.2.0-test") -> list[str]:

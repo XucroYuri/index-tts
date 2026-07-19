@@ -231,6 +231,8 @@ def capabilities() -> dict[str, Any]:
     return {
         "capabilities": [
             "tts",
+            "trained_weights_voice",
+            "reference_audio_voice",
             "trained-weights-voice",
             "reference-audio-voice",
             "gpt-weights",

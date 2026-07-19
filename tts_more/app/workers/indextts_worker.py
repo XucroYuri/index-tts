@@ -14,6 +14,7 @@ from app.workers.indextts_subprocess import IndexTTSSubprocessAdapter
 from app.workers.runtime import release_cuda_memory, worker_runtime_status
 
 REPO_DIR = Path(os.environ.get("TTS_MORE_INDEXTTS_REPO", "repo/index-tts"))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _resolve_python_exe() -> str:
@@ -39,7 +40,13 @@ loaded_profile: str | None = None
 
 
 def _artifact_store() -> ArtifactStore:
-    return ArtifactStore(REPO_DIR / "uploaded_ref")
+    configured_root = os.environ.get("TTS_MORE_ARTIFACT_ROOT")
+    artifact_root = Path(configured_root).expanduser() if configured_root else (
+        PROJECT_ROOT / "data" / "runtime" / "worker-artifacts" / "indextts"
+    )
+    if not artifact_root.is_absolute():
+        artifact_root = PROJECT_ROOT / artifact_root
+    return ArtifactStore(artifact_root)
 
 
 register_artifact_routes(app, _artifact_store)
@@ -58,7 +65,16 @@ def health() -> dict[str, Any]:
 
 @app.get("/capabilities")
 def capabilities() -> dict[str, Any]:
-    return {"capabilities": ["tts", "reference-audio", "emotion-text", "artifact-transfer"]}
+    return {
+        "capabilities": [
+            "tts",
+            "reference_audio_voice",
+            "emotion_text",
+            "reference-audio",
+            "emotion-text",
+            "artifact-transfer",
+        ]
+    }
 
 
 @app.post("/load")

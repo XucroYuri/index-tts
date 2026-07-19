@@ -1,0 +1,8 @@
+{
+  "upstream_repository": "https://github.com/XucroYuri/index-tts.git",
+  "branch": "main",
+  "worker_module": "tts_more_worker.indextts:app",
+  "python": "3.11.9",
+  "port": 9881,
+  "import_probe": "import fastapi,torch; from indextts.infer_v2 import IndexTTS2; print('IndexTTS imports passed')"
+}

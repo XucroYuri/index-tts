@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "miniforge": {
+    "version": "26.3.2-2",
+    "archive": "Miniforge3-26.3.2-2-Windows-x86_64.exe",
+    "url": "https://github.com/conda-forge/miniforge/releases/download/26.3.2-2/Miniforge3-26.3.2-2-Windows-x86_64.exe",
+    "sha256": "088884aafcbf2e3355671d4e9b227b0d1cfb278e3bbe74ba2ad213c553874d70",
+    "size_bytes": 79227640
+  },
+  "uv": {
+    "version": "0.11.28",
+    "archive": "uv-0.11.28-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/40/bc/d67b18cddd54c503c7bad2b189a47fd7a1d07ea10b9212624f892b985498/uv-0.11.28-py3-none-win_amd64.whl",
+    "sha256": "f4fcf2c8d9f1444b900e6b8dbbb828825fb76eca01acd18aeaa5c90240408cda",
+    "size_bytes": 27603677
+  }
+}

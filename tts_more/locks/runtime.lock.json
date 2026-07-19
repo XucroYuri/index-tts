@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "component": "indextts",
+  "python_version": "3.11.9",
+  "import_probe": "import fastapi,torch; from indextts.infer_v2 import IndexTTS2",
+  "dependency_mode": "uv-check-requirements",
+  "required_free_bytes": 21474836480,
+  "auto_order": ["cu128", "cu126", "cpu"],
+  "profiles": {
+    "cu128": {"minimum_nvidia_driver": "570.00", "dependency_lock": "requirements-cu128.lock.txt"},
+    "cu126": {"minimum_nvidia_driver": "560.00", "dependency_lock": "requirements-cu126.lock.txt"},
+    "cpu": {"dependency_lock": "requirements-cpu.lock.txt"}
+  },
+  "assets": {
+    "python": {"id": "cpython-3.11.9-embed-amd64", "urls": ["https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip", "https://download.qt.io/development_releases/prebuilt/python/python-3.11.9-embed-amd64.zip"], "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b", "size_bytes": 11249023, "archive_entry": "python.exe"},
+    "uv": {"id": "uv-0.11.28-windows-x64", "urls": ["https://files.pythonhosted.org/packages/40/bc/d67b18cddd54c503c7bad2b189a47fd7a1d07ea10b9212624f892b985498/uv-0.11.28-py3-none-win_amd64.whl", "https://mirrors.aliyun.com/pypi/packages/40/bc/d67b18cddd54c503c7bad2b189a47fd7a1d07ea10b9212624f892b985498/uv-0.11.28-py3-none-win_amd64.whl"], "sha256": "f4fcf2c8d9f1444b900e6b8dbbb828825fb76eca01acd18aeaa5c90240408cda", "size_bytes": 27603677, "archive_entry": "uv-0.11.28.data/scripts/uv.exe"}
+  }
+}

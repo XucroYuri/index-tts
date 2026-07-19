@@ -1,0 +1,150 @@
+name: Windows portable package
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Portable package version
+        required: true
+        default: 0.2.0
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: windows-latest
+    env:
+      PACKAGE_VERSION: ${{ inputs.version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '0.2.0-ci' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install frozen uv tool
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+      - name: Validate one-click portable contract and immutable locks
+        shell: pwsh
+        run: |
+          uv lock --check
+          python tts_more\tests\test_portable_integration.py -v
+          python tests\test_tts_more_release_runtime_contract.py -v
+          if (-not (Select-String -LiteralPath Start.cmd -Pattern 'Invoke-PortableStart.ps1' -Quiet)) { throw 'Start.cmd bypasses the portable controller' }
+          if (-not (Test-Path -LiteralPath '使用说明-先看这里.txt' -PathType Leaf)) { throw 'portable root guide is missing' }
+      - name: Build bootstrap and prove full is prohibited
+        shell: pwsh
+        run: |
+          $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "tts-more-build-tools"
+          uv sync --locked --project tts_more/build-tools
+          if ($LASTEXITCODE -ne 0) { throw "locked portable build-tools sync failed" }
+          $buildPython = Join-Path $env:UV_PROJECT_ENVIRONMENT "Scripts\python.exe"
+          if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) { throw "locked portable build-tools Python is missing" }
+          $env:TTS_MORE_BUILD_PYTHON = $buildPython
+          $version = $env:PACKAGE_VERSION -replace '^v', ''
+          $version = $version -replace '[^0-9A-Za-z._-]', '-'
+          .\Build-Package.ps1 -Profile Bootstrap -Device CPU -Version $version
+          $zip = @(Get-ChildItem artifacts\portable\bootstrap\*.zip)
+          if ($zip.Count -ne 1) { throw "expected exactly one bootstrap ZIP" }
+          & $buildPython tts_more\portable_packages.py audit-release --zip $zip[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "bootstrap ZIP release audit failed" }
+          & $buildPython tts_more\portable_packages.py audit-release-assets --directory artifacts\portable\bootstrap --expected-component indextts --expected-version $version
+          if ($LASTEXITCODE -ne 0) { throw "bootstrap release asset set or embedded package_profile audit failed" }
+          $hostPowerShell = (Get-Process -Id $PID).Path
+          $previousErrorActionPreference = $ErrorActionPreference
+          $fullOutput = @()
+          $fullExit = $null
+          try {
+            $ErrorActionPreference = "Continue"
+            $fullOutput = @(& $hostPowerShell -NoProfile -NonInteractive -File .\Build-Package.ps1 -Profile Full -Device CPU -Version $version 2>&1)
+            $fullExit = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
+          if ($null -eq $fullExit -or $fullExit -eq 0 -or (($fullOutput -join "`n") -notmatch "profile=full")) {
+            throw "full profile refusal probe failed: exit=$fullExit output=$($fullOutput -join ' | ')"
+          }
+          exit 0
+      - uses: actions/upload-artifact@v7
+        with:
+          name: indextts-windows-bootstrap
+          if-no-files-found: error
+          path: |
+            artifacts/portable/bootstrap/*.zip
+            artifacts/portable/bootstrap/*.zip.sha256
+            artifacts/portable/bootstrap/*.zip.spdx.json
+            artifacts/portable/bootstrap/*.zip.licenses.json
+            artifacts/portable/bootstrap/*.zip.provenance.json
+            artifacts/portable/bootstrap/*.zip.acceptance.json
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v8
+        with:
+          name: indextts-windows-bootstrap
+          path: release-assets
+      - name: Publish bootstrap assets only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          assets=(
+            release-assets/*.zip
+            release-assets/*.zip.sha256
+            release-assets/*.zip.spdx.json
+            release-assets/*.zip.licenses.json
+            release-assets/*.zip.provenance.json
+            release-assets/*.zip.acceptance.json
+          )
+          mapfile -t local_asset_names < <(printf '%s\n' "${assets[@]##*/}" | LC_ALL=C sort -u)
+          if [ "${#assets[@]}" -ne 6 ] || [ "${#local_asset_names[@]}" -ne 6 ]; then
+            echo "local Bootstrap release allowlist must contain exactly six assets" >&2
+            exit 1
+          fi
+          remote_asset_names=()
+          release_exists=false
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            release_exists=true
+            mapfile -t remote_asset_names < <(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort -u)
+            unexpected_remote="$(comm -23 <(printf '%s\n' "${remote_asset_names[@]}") <(printf '%s\n' "${local_asset_names[@]}"))"
+            if [ -n "$unexpected_remote" ]; then
+              echo "existing GitHub Release has foreign, Full, old-version, or extra assets:" >&2
+              printf '%s\n' "$unexpected_remote" >&2
+              exit 1
+            fi
+          fi
+          mapfile -t post_upload_union < <(printf '%s\n' "${local_asset_names[@]}" "${remote_asset_names[@]}" | LC_ALL=C sort -u)
+          if ! diff -u <(printf '%s\n' "${local_asset_names[@]}") <(printf '%s\n' "${post_upload_union[@]}"); then
+            echo "GitHub Release asset union would exceed the exact local six-asset allowlist" >&2
+            exit 1
+          fi
+          if [ "$release_exists" != true ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          verify_asset_args=()
+          for asset_name in "${local_asset_names[@]}"; do
+            verify_asset_args+=(--expected-name "$asset_name")
+          done
+          python tts_more/verify-release-asset-set.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            "${verify_asset_args[@]}"

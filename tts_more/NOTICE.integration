@@ -1,0 +1,15 @@
+TTS More
+Copyright 2026 TTS More contributors
+
+The TTS More orchestration code and the synchronized tts_more integration layer
+are licensed under the Apache License, Version 2.0.
+
+GPT-SoVITS, IndexTTS, CosyVoice, their transitive dependencies, pretrained
+models, and model assets retain their respective upstream licenses and notices.
+Portable packages include THIRD_PARTY_NOTICES.json and model lock provenance;
+those records control redistribution eligibility and do not relicense upstream
+code or model weights.
+
+The Windows GPT-SoVITS portable runtime uses openjtalk 0.3.0.dev3, distributed
+under the MIT License. Its bundled Open JTalk dictionary and native components
+retain the license files and notices shipped in the Python distribution.

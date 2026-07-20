@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$env:PYTHONDONTWRITEBYTECODE = "1"
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:Context = $null
 

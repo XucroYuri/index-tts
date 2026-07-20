@@ -506,7 +506,8 @@ function Test-PortableRequestedProfileMatchesState {
 function Test-PortableLockedAssets {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
-        [Parameter(Mandatory = $true)][string]$ModelLock
+        [Parameter(Mandatory = $true)][string]$ModelLock,
+        [bool]$VerifyHashes = $true
     )
     try {
         if (!(Test-Path -LiteralPath $ModelLock -PathType Leaf)) { return $false }
@@ -523,7 +524,7 @@ function Test-PortableLockedAssets {
             $target = Resolve-PortablePackagePath -Root $Root -RelativePath ([string]$asset.target) -Label "model asset" -MustExist
             if (!(Test-Path -LiteralPath $target -PathType Leaf)) { return $false }
             if ($null -ne $asset.PSObject.Properties["size_bytes"] -and [int64]$asset.size_bytes -ne (Get-Item -LiteralPath $target).Length) { return $false }
-            if ($null -ne $asset.PSObject.Properties["sha256"] -and ![string]::IsNullOrWhiteSpace([string]$asset.sha256)) {
+            if ($VerifyHashes -and $null -ne $asset.PSObject.Properties["sha256"] -and ![string]::IsNullOrWhiteSpace([string]$asset.sha256)) {
                 if (![string]::Equals((Get-PortableFileSha256 -Path $target), [string]$asset.sha256, [StringComparison]::OrdinalIgnoreCase)) { return $false }
             }
         }
@@ -605,6 +606,7 @@ function Test-PortableInstallStateComplete {
         [Parameter(Mandatory = $true)][string]$ExpectedPython,
         [string]$ImportProbe = "import sys",
         [switch]$ValidateAssets,
+        [switch]$CheckLockedAssets,
         [string]$Sha256Manifest = "",
         [string[]]$RequiredCoverage = @()
     )
@@ -629,12 +631,12 @@ function Test-PortableInstallStateComplete {
             if ([string]$state.model_lock_sha256 -ne $modelHash) { return $false }
         }
         $python = Join-Path $Root "runtime\live\python.exe"
-        if ($ValidateAssets) {
-            if ($Sha256Manifest) {
+        if ($ValidateAssets -or $CheckLockedAssets) {
+            if ($ValidateAssets -and $Sha256Manifest) {
                 $integrityCoverage = Get-PortableIntegrityCoverage -Root $Root -RuntimeLock $RuntimeLock -ModelLock $ModelLock -RequiredCoverage $RequiredCoverage
                 Assert-PortableSha256Manifest -Root $Root -ManifestPath $Sha256Manifest -RequiredCoverage $integrityCoverage
             }
-            if (!(Test-PortableLockedAssets -Root $Root -ModelLock $ModelLock)) { return $false }
+            if (!(Test-PortableLockedAssets -Root $Root -ModelLock $ModelLock -VerifyHashes:([bool]$ValidateAssets))) { return $false }
         }
         if (!(Test-PortableRuntime -Root $Root -SourceRoot $SourceRoot -PythonPath $python -ExpectedVersion $ExpectedPython -ImportProbe $ImportProbe)) { return $false }
         return $true

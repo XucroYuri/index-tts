@@ -979,7 +979,7 @@ function Test-InstallState {
     param([Parameter(Mandatory = $true)][string]$Root, [switch]$Full)
 
     $context = if ($script:Context) { $script:Context } else { Get-PackageContext -Root $Root }
-    return Test-PortableInstallStateComplete -Root $context.Root -SourceRoot $context.SourceRoot -StatePath $context.StatePath -Component $context.Component -BuildId $context.BuildId -RuntimeLock $context.RuntimeLock -ModelLock $context.ModelLock -ExpectedPython $context.ExpectedPython -ImportProbe $context.ImportProbe -ValidateAssets:$Full -Sha256Manifest $context.Sha256Manifest -RequiredCoverage $context.RequiredCoverage
+    return Test-PortableInstallStateComplete -Root $context.Root -SourceRoot $context.SourceRoot -StatePath $context.StatePath -Component $context.Component -BuildId $context.BuildId -RuntimeLock $context.RuntimeLock -ModelLock $context.ModelLock -ExpectedPython $context.ExpectedPython -ImportProbe $context.ImportProbe -CheckLockedAssets:$Full -Sha256Manifest $context.Sha256Manifest -RequiredCoverage $context.RequiredCoverage
 }
 
 function Get-PortableInstallStateDiagnostic {

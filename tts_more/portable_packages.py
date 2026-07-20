@@ -16,9 +16,6 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
-
-
 V1_REQUIRED_FIELDS = (
     "schema_version",
     "component",
@@ -73,6 +70,17 @@ PORTABLE_COMPONENTS = frozenset({"tts-more", "gpt-sovits", "indextts", "cosyvoic
 RESOLVED_DEVICE_PROFILES = frozenset({"cpu", "cu126", "cu128"})
 HASH_CHUNK_SIZE = 1024 * 1024
 ZIP_METADATA_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _draft_2020_12_validator(schema: Any) -> Any:
+    try:
+        from jsonschema import Draft202012Validator
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "jsonschema is required for portable package schema validation, "
+            "but is not required for runtime SHA-256 verification"
+        ) from exc
+    return Draft202012Validator(schema)
 
 
 def _sha256_stream(stream: Any) -> str:
@@ -459,7 +467,7 @@ def _validate_embedded_v2_package(
     require_install_state: bool = True,
 ) -> None:
     schema = json.loads(_portable_schema_path().read_text(encoding="utf-8-sig"))
-    validator = Draft202012Validator(schema)
+    validator = _draft_2020_12_validator(schema)
     schema_errors = sorted(validator.iter_errors(manifest), key=lambda error: list(error.path))
     if schema_errors:
         raise ValueError(f"full ZIP manifest schema v2 validation failed: {schema_errors[0].message}")

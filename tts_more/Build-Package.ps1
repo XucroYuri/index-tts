@@ -212,6 +212,76 @@ public static class TtsMorePortableDirectoryHandle
         }
     }
 
+    public static SafeFileHandle OpenDirectoryRelative(
+        SafeFileHandle parent,
+        string name,
+        bool shareDelete,
+        bool childAccess)
+    {
+        if (String.IsNullOrEmpty(name) || name == "." || name == ".." || name.Contains("\\") || name.Contains("/"))
+        {
+            throw new ArgumentException("Unsafe worker staging directory name", "name");
+        }
+        IntPtr nameBuffer = IntPtr.Zero;
+        IntPtr unicodePointer = IntPtr.Zero;
+        try
+        {
+            nameBuffer = Marshal.StringToHGlobalUni(name);
+            UnicodeString unicode = new UnicodeString();
+            unicode.Length = checked((ushort)(name.Length * 2));
+            unicode.MaximumLength = checked((ushort)((name.Length + 1) * 2));
+            unicode.Buffer = nameBuffer;
+            unicodePointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UnicodeString)));
+            Marshal.StructureToPtr(unicode, unicodePointer, false);
+            ObjectAttributes attributes = new ObjectAttributes();
+            attributes.Length = Marshal.SizeOf(typeof(ObjectAttributes));
+            attributes.RootDirectory = parent.DangerousGetHandle();
+            attributes.ObjectName = unicodePointer;
+            attributes.Attributes = 0x00000040;
+            IoStatusBlock ioStatus;
+            IntPtr rawHandle;
+            const uint Synchronize = 0x00100000;
+            const uint Delete = 0x00010000;
+            const uint FileReadAttributes = 0x00000080;
+            const uint FileListDirectory = 0x00000001;
+            const uint FileAddSubdirectory = 0x00000004;
+            const uint ShareRead = 0x00000001;
+            const uint ShareWrite = 0x00000002;
+            const uint ShareDelete = 0x00000004;
+            const uint FileOpen = 1;
+            const uint FileDirectoryFile = 0x00000001;
+            const uint FileSynchronousIoNonalert = 0x00000020;
+            const uint FileOpenReparsePoint = 0x00200000;
+            uint desiredAccess = Synchronize | Delete | FileReadAttributes | FileListDirectory;
+            if (childAccess) { desiredAccess |= FileAddSubdirectory; }
+            uint share = ShareRead | ShareWrite | (shareDelete ? ShareDelete : 0);
+            int status = NtCreateFile(
+                out rawHandle,
+                desiredAccess,
+                ref attributes,
+                out ioStatus,
+                IntPtr.Zero,
+                0x00000010,
+                share,
+                FileOpen,
+                FileDirectoryFile | FileSynchronousIoNonalert | FileOpenReparsePoint,
+                IntPtr.Zero,
+                0);
+            if (status < 0)
+            {
+                throw new Win32Exception(
+                    unchecked((int)RtlNtStatusToDosError(status)),
+                    "Cannot safely open worker staging directory relative to its verified parent: " + name);
+            }
+            return new SafeFileHandle(rawHandle, true);
+        }
+        finally
+        {
+            if (unicodePointer != IntPtr.Zero) { Marshal.FreeHGlobal(unicodePointer); }
+            if (nameBuffer != IntPtr.Zero) { Marshal.FreeHGlobal(nameBuffer); }
+        }
+    }
+
     public static void MarkDirectoryForDeletion(SafeFileHandle handle)
     {
         FileDispositionInformation information = new FileDispositionInformation();
@@ -677,6 +747,58 @@ function Remove-WorkerFullRuntimeBytecode {
     }
 }
 
+function Remove-WorkerFullMutableCaches {
+    param([Parameter(Mandatory = $true)][string]$PackageRoot)
+
+    $resolvedPackage = [IO.Path]::GetFullPath($PackageRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $cacheRoot = [IO.Path]::GetFullPath((Join-Path $resolvedPackage "data\cache\numba"))
+    $packagePrefix = $resolvedPackage + [IO.Path]::DirectorySeparatorChar
+    if (!$cacheRoot.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Full package mutable cache resolves outside the package root"
+    }
+    if (!(Test-Path -LiteralPath $cacheRoot)) { return }
+
+    $packageHandle = $null
+    $dataHandle = $null
+    $cacheHandle = $null
+    $numbaHandle = $null
+    try {
+        $packageHandle = [TtsMorePortableDirectoryHandle]::Open($resolvedPackage, $false, $true)
+        try { [void][TtsMorePortableDirectoryHandle]::Identity($packageHandle) }
+        catch { throw [InvalidOperationException]::new("Full package mutable cache parent chain contains a reparse point", $_.Exception) }
+
+        $dataHandle = [TtsMorePortableDirectoryHandle]::OpenDirectoryRelative($packageHandle, "data", $false, $true)
+        try { [void][TtsMorePortableDirectoryHandle]::Identity($dataHandle) }
+        catch { throw [InvalidOperationException]::new("Full package mutable cache parent chain contains a reparse point", $_.Exception) }
+
+        $cacheHandle = [TtsMorePortableDirectoryHandle]::OpenDirectoryRelative($dataHandle, "cache", $false, $true)
+        try { [void][TtsMorePortableDirectoryHandle]::Identity($cacheHandle) }
+        catch { throw [InvalidOperationException]::new("Full package mutable cache parent chain contains a reparse point", $_.Exception) }
+
+        $numbaHandle = [TtsMorePortableDirectoryHandle]::OpenDirectoryRelative($cacheHandle, "numba", $false, $false)
+        try { $numbaIdentity = [TtsMorePortableDirectoryHandle]::Identity($numbaHandle) }
+        catch { throw [InvalidOperationException]::new("Full package mutable cache parent chain contains a reparse point", $_.Exception) }
+
+        Remove-WorkerOwnedDirectoryContents -Path $cacheRoot
+        $cleanupIdentity = [TtsMorePortableDirectoryHandle]::Identity($numbaHandle)
+        if (![string]::Equals($cleanupIdentity, $numbaIdentity, [StringComparison]::Ordinal)) {
+            throw "Full package mutable cache handle identity changed unexpectedly"
+        }
+        [TtsMorePortableDirectoryHandle]::MarkDirectoryForDeletion($numbaHandle)
+        $numbaHandle.Dispose()
+        $numbaHandle = $null
+    }
+    finally {
+        if ($null -ne $numbaHandle) { $numbaHandle.Dispose() }
+        if ($null -ne $cacheHandle) { $cacheHandle.Dispose() }
+        if ($null -ne $dataHandle) { $dataHandle.Dispose() }
+        if ($null -ne $packageHandle) { $packageHandle.Dispose() }
+    }
+}
+
 function Assert-WorkerFullRuntimeBoundary {
     param([Parameter(Mandatory = $true)][string]$PackageRoot)
     foreach ($entry in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force)) {
@@ -959,10 +1081,12 @@ if ($Profile -eq "Full") {
         throw $primaryFailure
     }
     if ($null -ne $uvCleanupFailure) { throw $uvCleanupFailure }
+    Remove-WorkerFullMutableCaches -PackageRoot $stage
     Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
     Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
     $runtimeLockForProbe = Get-Content -LiteralPath (Join-Path $stagedBundle "locks\runtime.lock.json") -Raw | ConvertFrom-Json
     $runtimeCrossVolumeProbe = Test-WorkerFullRuntimeOnOtherVolume -PackageRoot $stage -ExpectedPython ([string]$runtimeLockForProbe.python_version) -ImportProbe ([string]$runtimeLockForProbe.import_probe)
+    Remove-WorkerFullMutableCaches -PackageRoot $stage
     Remove-WorkerFullRuntimeBytecode -PackageRoot $stage
     Assert-WorkerFullRuntimeBoundary -PackageRoot $stage
     $statePath = Join-Path $stage "data\local\install-state.json"

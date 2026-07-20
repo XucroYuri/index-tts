@@ -1062,6 +1062,11 @@ class PortableIntegrationContractTests(unittest.TestCase):
         for token in (
             "portable-python.ps1",
             "UV_CACHE_DIR",
+            "Remove-WorkerFullMutableCaches",
+            'data\\cache\\numba',
+            "OpenDirectoryRelative",
+            "Full package mutable cache parent chain contains a reparse point",
+            "Full package mutable cache handle identity changed unexpectedly",
             "pyvenv.cfg",
             "conda-meta",
             "condabin",

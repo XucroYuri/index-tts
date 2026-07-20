@@ -1000,6 +1000,47 @@ class PortableIntegrationContractTests(unittest.TestCase):
         self.assertIn("$PortableRuntime.SitePackages", initializer)
         self.assertIn("function Publish-PortableRuntimeTransaction", initializer)
 
+    def test_package_private_python_entrypoints_disable_bytecode_writes(self) -> None:
+        entrypoints = (
+            {name: BUNDLE / name for name in (
+                "Invoke-PortableStart.ps1",
+                "Initialize.ps1",
+                "Start-Worker.ps1",
+                "Stop-Worker.ps1",
+                "Start-WebUI.ps1",
+            )}
+            if BUNDLE.is_dir()
+            else {
+                "Invoke-PortableStart.ps1": ROOT / "scripts" / "Invoke-PortableStart.ps1",
+                **{
+                    name: ROOT / "integrations" / "windows" / name
+                    for name in (
+                        "Initialize.ps1",
+                        "Start-Worker.ps1",
+                        "Stop-Worker.ps1",
+                        "Start-WebUI.ps1",
+                    )
+                },
+            }
+        )
+        for name, path in entrypoints.items():
+            script = path.read_text(encoding="utf-8")
+            self.assertIn('$env:PYTHONDONTWRITEBYTECODE = "1"', script, name)
+
+        webui = entrypoints["Start-WebUI.ps1"].read_text(encoding="utf-8")
+        self.assertIn(
+            '$arguments = @("-I", "-B", (Join-Path $SourceRoot "webui.py"), "zh_CN")',
+            webui,
+        )
+        runner_path = (
+            BUNDLE / "portable_package_runner.py"
+            if BUNDLE.is_dir()
+            else ROOT / "scripts" / "portable_package_runner.py"
+        )
+        runner = runner_path.read_text(encoding="utf-8")
+        self.assertIn('worker_env["PYTHONDONTWRITEBYTECODE"] = "1"', runner)
+        self.assertRegex(runner, r'str\(runtime_python\),\s*"-B",\s*"-m",')
+
     def test_worker_builder_stages_helper_and_applies_full_runtime_audits(self) -> None:
         worker_bundle = BUNDLE if BUNDLE.is_dir() else ROOT / "integrations" / "windows"
         builder = (worker_bundle / "Build-Package.ps1").read_text(encoding="utf-8")

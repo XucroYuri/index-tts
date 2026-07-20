@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$env:PYTHONDONTWRITEBYTECODE = "1"
 $pathsScript = Join-Path $PSScriptRoot "Portable-Paths.ps1"
 if (!(Test-Path -LiteralPath $pathsScript -PathType Leaf)) { throw "Portable-Paths.ps1 is missing" }
 . $pathsScript
@@ -24,7 +25,7 @@ try {
         "gpt-sovits" {
             if ($isStaged) {
                 if (!(Test-Path -LiteralPath $privatePython -PathType Leaf)) { throw "GPT-SoVITS package runtime is missing; run Initialize.cmd first" }
-                $arguments = @("-I", (Join-Path $SourceRoot "webui.py"), "zh_CN") + @($WebUIArguments)
+                $arguments = @("-I", "-B", (Join-Path $SourceRoot "webui.py"), "zh_CN") + @($WebUIArguments)
                 & $privatePython @arguments
             } else {
                 $launcher = Join-Path $SourceRoot "go-webui.bat"

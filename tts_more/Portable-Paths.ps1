@@ -62,6 +62,32 @@ function Assert-PortableWorkerPathChain {
     return $resolvedPath
 }
 
+function Set-PortableWorkerMutableCacheEnvironment {
+    param([Parameter(Mandatory = $true)][string]$PackageRoot)
+
+    $resolvedPackage = Assert-PortableWorkerPackageRootChain -Root $PackageRoot
+    $current = $resolvedPackage
+    foreach ($segment in @("data", "cache", "numba")) {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $current $segment))
+        if (Test-Path -LiteralPath $candidate) {
+            $item = Get-Item -LiteralPath $candidate -Force
+            if (!$item.PSIsContainer) { throw "portable mutable cache path is not a directory" }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "portable mutable cache path cannot be a reparse point"
+            }
+        } else {
+            [void][IO.Directory]::CreateDirectory($candidate)
+            $item = Get-Item -LiteralPath $candidate -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "portable mutable cache path cannot be a reparse point"
+            }
+        }
+        $current = $candidate
+    }
+    $env:NUMBA_CACHE_DIR = $current
+    return $current
+}
+
 function Resolve-PortableWorkerSourceRoot {
     param(
         [Parameter(Mandatory = $true)][string]$PackageRoot,

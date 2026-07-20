@@ -11,6 +11,7 @@ $pathsScript = Join-Path $PSScriptRoot "Portable-Paths.ps1"
 if (!(Test-Path -LiteralPath $pathsScript -PathType Leaf)) { throw "Portable-Paths.ps1 is missing" }
 . $pathsScript
 $paths = Get-PortableWorkerPaths -BundleRoot $PSScriptRoot -PackageRoot $PackageRoot
+[void](Set-PortableWorkerMutableCacheEnvironment -PackageRoot $paths.PackageRoot)
 $Root = $paths.PackageRoot
 $SourceRoot = $paths.SourceRoot
 $config = $paths.Config

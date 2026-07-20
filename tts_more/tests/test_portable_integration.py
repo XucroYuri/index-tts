@@ -1026,6 +1026,19 @@ class PortableIntegrationContractTests(unittest.TestCase):
         for name, path in entrypoints.items():
             script = path.read_text(encoding="utf-8")
             self.assertIn('$env:PYTHONDONTWRITEBYTECODE = "1"', script, name)
+            if name == "Stop-Worker.ps1":
+                self.assertNotIn("Set-PortableWorkerMutableCacheEnvironment", script, name)
+                self.assertIn("stop-worker --package-root $Root", script, name)
+            else:
+                self.assertIn("Set-PortableWorkerMutableCacheEnvironment", script, name)
+
+        controller = entrypoints["Invoke-PortableStart.ps1"].read_text(encoding="utf-8")
+        self.assertLess(
+            controller.index(
+                "Set-PortableWorkerMutableCacheEnvironment -PackageRoot $workerPaths.PackageRoot"
+            ),
+            controller.index("$installed = Test-InstallState"),
+        )
 
         webui = entrypoints["Start-WebUI.ps1"].read_text(encoding="utf-8")
         self.assertIn(
@@ -1039,6 +1052,8 @@ class PortableIntegrationContractTests(unittest.TestCase):
         )
         runner = runner_path.read_text(encoding="utf-8")
         self.assertIn('worker_env["PYTHONDONTWRITEBYTECODE"] = "1"', runner)
+        self.assertIn('worker_env["NUMBA_CACHE_DIR"] = str(_mutable_cache_directory(root))', runner)
+        self.assertIn('for part in ("data", "cache", "numba"):', runner)
         self.assertRegex(runner, r'str\(runtime_python\),\s*"-B",\s*"-m",')
 
     def test_worker_builder_stages_helper_and_applies_full_runtime_audits(self) -> None:

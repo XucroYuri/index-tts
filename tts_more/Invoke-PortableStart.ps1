@@ -146,6 +146,7 @@ function Get-PackageContext {
         . $pathsScript
         try {
             $workerPaths = Get-PortableWorkerPaths -BundleRoot $bundle -PackageRoot $resolvedRoot
+            [void](Set-PortableWorkerMutableCacheEnvironment -PackageRoot $workerPaths.PackageRoot)
             $sourceRoot = $workerPaths.SourceRoot
         } catch {
             Throw-PortableStartError "PACKAGE_CORRUPT" "The worker source_root is invalid: $($_.Exception.Message)"

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "component": "indextts",
   "integration_version": "2.0.0",
-  "source_revision": "f514be2968cad8574cf0591e52fc1ebaf9498228",
+  "source_revision": "a4d538039a0929f104041cc94657790d13aea5c2",
   "files": {
     "Build-Package.ps1": "b5cd83b6b7554754e8c2d41d853131165c9684eec86c4d6dd77c49f2c7fd5d14",
     "Initialize.cmd": "cce32677858f6b3a593152e73fcb399b210eee9c50cc1e5ef2fd4608d21f2126",
@@ -61,7 +61,7 @@
     "tts_more/portable_launcher.py": "5214d08787cbc6e915dcd4c47754d59a8863c288952ef2e6e888d1a534954d5c",
     "tts_more/portable_operations.py": "74e344171328c05a420a469a47e53c1f1cee27a30a3d0971df4b9137c5b92ec1",
     "tts_more/portable_package_runner.py": "8ea909477b7c4fbe5412033f0533842f2d4b8505e5d60afc08db71b45ac55e07",
-    "tts_more/portable_packages.py": "90f2687b026b061d2acd883869d67088a54daf1e3771631ebb321c3f2239c06b",
+    "tts_more/portable_packages.py": "e41759da35615fdc86bd774a8dc6bc2f52ebf8f807e40c820d9aed410265f3fd",
     "tts_more/select-portable-folder.ps1": "fd8253ccefd21deabac7529e05d44be63e394a93f1a96da17dd6e5ce2d075116",
     "tts_more/tests/__init__.py": "fefc949246e59922d99bee259403e4845d4ddded5611e8584f0c9eb80997ae53",
     "tts_more/tests/test_portable_integration.py": "5a3354780e5e33e1ec56110d797c3bb48b5eebb23f68d0e1da76fe4132fc9a5f",

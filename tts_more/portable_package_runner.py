@@ -41,6 +41,25 @@ def _assert_non_reparse_chain(root: Path, path: Path) -> None:
             raise ValueError("portable worker source_root traverses a reparse point")
 
 
+def _mutable_cache_directory(root: Path) -> Path:
+    current = root
+    for part in ("data", "cache", "numba"):
+        current /= part
+        try:
+            current.mkdir()
+        except FileExistsError:
+            pass
+        metadata = current.lstat()
+        attributes = int(getattr(metadata, "st_file_attributes", 0))
+        if (
+            not current.is_dir()
+            or current.is_symlink()
+            or attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        ):
+            raise ValueError("portable mutable cache path must be a package-private directory")
+    return current
+
+
 def _worker_layout(root: Path) -> tuple[Path, Path, dict[str, object]]:
     candidates = (root / "app" / "tts_more", root / "tts_more")
     bundle = None
@@ -101,6 +120,7 @@ def build_worker_process(
     worker_env["TTS_MORE_ARTIFACT_ROOT"] = str(root / "data" / "local" / "artifacts")
     worker_env["PYTHONPATH"] = str(source_root)
     worker_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    worker_env["NUMBA_CACHE_DIR"] = str(_mutable_cache_directory(root))
     if trusted_lan:
         worker_env.pop("TTS_MORE_WORKER_ALLOW_PATH_DELIVERY", None)
     else:
